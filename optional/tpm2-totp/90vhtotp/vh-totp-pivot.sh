@@ -25,18 +25,25 @@ if [ -e "$GEN" ]; then
 	{
 		echo
 		echo "=== tpm2-totp: генерация секрета (PCR $PCRS) ==="
+		echo "Ожидается ТОЛЬКО после «optional/tpm2-totp/enable». Неожиданный запрос —"
+		echo "признак вмешательства: выключите ноутбук и проверяйте его с live-флешки."
 		echo "Придумайте пароль восстановления (diceware от 5 слов, НЕ пароль LUKS) —"
 		echo "он нужен для перезапечатывания после обновлений. Затем отсканируйте QR."
 	} > $tty
+	tpm2-totp clean >/dev/null 2>&1      # старый секрет (повторное включение модуля)
 	while :; do
 		ask_pw "Пароль восстановления: "; p1=$pw
 		ask_pw "Ещё раз: "; p2=$pw
 		[ -n "$p1" ] && [ "$p1" = "$p2" ] && break
 		echo "не совпало или пусто — ещё раз" > $tty
 	done
-	tpm2-totp -p "$PCRS" -P "$p1" generate > $tty 2>&1 && clear_flag "$GEN"
+	if tpm2-totp -p "$PCRS" -P "$p1" generate > $tty 2>&1; then
+		clear_flag "$GEN"
+		echo "Нажмите Enter, когда код добавлен в приложение…" > $tty; read -r _ < $tty
+	else
+		echo "генерация не удалась — флаг оставлен, попытка будет при следующей загрузке" > $tty
+	fi
 	p1="" p2="" pw=""
-	echo "Нажмите Enter, когда код добавлен в приложение…" > $tty; read -r _ < $tty
 elif [ -e "$RESEAL" ]; then
 	{
 		echo
