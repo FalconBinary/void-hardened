@@ -59,6 +59,10 @@ if [ "$offline" = 1 ] && [ $((rebuild + kver_updated)) -gt 0 ]; then
 	/usr/local/sbin/vh-keys umount
 fi
 
+echo "==> разбор обновлённых пакетов (новые SUID, sysctl.d, udev, хуки — vh-pkg scan)"
+# shellcheck disable=SC2086
+/usr/local/sbin/vh-pkg scan $(echo "$updates" | sed 's/-[^-]*$//') || true
+
 echo "==> SUID и capabilities"
 /usr/local/sbin/vh-suid-strip
 

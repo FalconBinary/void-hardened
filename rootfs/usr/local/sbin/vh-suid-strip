@@ -19,6 +19,14 @@ for f in /usr/bin/su /usr/bin/sg /usr/bin/newgrp /usr/bin/chsh /usr/bin/chfn \
 	/usr/libexec/dbus-daemon-launch-helper; do
 	[ -e "$f" ] && chmod u-s,g-s "$f" && say "SUID/SGID снят: $f (ожидался noextract)"
 done
+# Файлы, у которых vh-pkg снял биты при установке программ (обновление вернуло бы их).
+if [ -r /etc/vh/suid-strip.list ]; then
+	grep -v '^#' /etc/vh/suid-strip.list | while IFS= read -r f; do
+		[ -f "$f" ] || continue
+		if [ -u "$f" ] || [ -g "$f" ]; then chmod u-s,g-s "$f" && say "SUID/SGID снят: $f (vh-pkg)"; fi
+		[ -n "$(getcap "$f" 2>/dev/null)" ] && setcap -r "$f" && say "capabilities сняты: $f (vh-pkg)"
+	done
+fi
 # ping: ICMP-сокеты по net.ipv4.ping_group_range вместо cap_net_raw.
 for f in /usr/bin/iputils-ping /usr/bin/ping; do
 	[ -f "$f" ] && [ ! -L "$f" ] && [ -n "$(getcap "$f" 2>/dev/null)" ] && setcap -r "$f" && say "capabilities сняты: $f"

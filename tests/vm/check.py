@@ -459,9 +459,31 @@ def step_deadmandump(a):
         check(f"deadman: после выключения в RAM нет: {name}", not present)
 
 
+def step_pkg(a):
+    """vh-pkg: предупреждение о нежелательном пакете, обезвреживание SUID и udev."""
+    vm, ser = boot(a)
+    try:
+        ser.buf = ""
+        ser.send("vh-pkg add fuse3; echo __PKG__rc=$?")
+        ser.expect(r"Ставить всё равно\? \[y/N\] ", 600)
+        check("vh-pkg: fuse3 помечен как нежелательный", "!! fuse3" in ser.alltext)
+        time.sleep(1)
+        ser.send("y")
+        m = ser.expect(r"__PKG__rc=(\d+)", 900)
+        check("vh-pkg add: установка прошла", m.group(1) == "0", ser.alltext[-600:].replace("\n", " | "))
+        rc, out = run(ser, "ls -l /usr/bin/fusermount3; ls /etc/udev/rules.d/; cat /etc/vh/suid-strip.list")
+        check("vh-pkg: SUID у fusermount3 снят", "-rwsr" not in out and "fusermount3" in out)
+        rc, out = run(ser, "chmod u+s /usr/bin/fusermount3 && vh-suid-strip --quiet; ls -l /usr/bin/fusermount3")
+        check("vh-suid-strip: снимает вернувшийся SUID по списку vh-pkg", "-rwsr" not in out)
+        rc, out = run(ser, "vh-pkg rm fuse3; xbps-query fuse3; echo q=$?")
+        check("vh-pkg rm: пакет удалён", "q=2" in out or "q=1" in out)
+    finally:
+        shutdown(vm, ser)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["base", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "deadmandump", "totp", "modules", "all"])
+    ap.add_argument("step", choices=["base", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "deadmandump", "totp", "modules", "pkg", "all"])
     ap.add_argument("--dir", default=os.path.join(vhvm.REPO, "tests", "vm", "work"))
     ap.add_argument("--mem", type=int, default=3072)
     ap.add_argument("--smp", type=int, default=4)
@@ -470,7 +492,7 @@ def main():
     a = ap.parse_args()
     steps = {"base": [step_base], "enroll": [step_enroll], "sb": [step_sb], "lock": [step_lock],
              "desktop": [step_desktop], "strictnet": [step_strictnet], "deadman": [step_deadman],
-             "totp": [step_totp], "modules": [step_modules], "deadmandump": [step_deadmandump],
+             "totp": [step_totp], "modules": [step_modules], "pkg": [step_pkg], "deadmandump": [step_deadmandump],
              "all": [step_base, step_enroll, step_sb, step_lock, step_desktop]}[a.step]
     for s in steps:
         s(a)
