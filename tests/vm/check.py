@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import vhvm  # noqa: E402
 
 RESULTS = []
+TOTP_PASS = "vh-test-totp-recovery"
 
 
 def check(name, ok, detail=""):
@@ -88,6 +89,15 @@ def boot(a, extra=None):
     ser.expect(r"[Pp]assword|[Pp]assphrase", 1800)
     time.sleep(2)
     ser.send(vhvm.LUKS_PASS)
+    # initramfs с optional/tpm2-totp может спросить пароль восстановления (генерация по флагу)
+    while True:
+        m = ser.expect(r"login: ?$|Пароль восстановления[^:]*: |Ещё раз: |Нажмите Enter|Введите RESEAL: ", 1800)
+        t = m.group(0)
+        if t.startswith("login"):
+            break
+        time.sleep(1)
+        ser.send("" if t.startswith("Нажмите") else ("RESEAL" if "RESEAL" in t else TOTP_PASS))
+    ser.buf = "login: "
     vhvm.login(ser, "admin", vhvm.USER_PASS)
     root_shell(ser)
     if getattr(a, "repo", False):
@@ -326,9 +336,6 @@ def step_deadman(a):
     print("с deadman:", res)
     for name, present in res.items():
         check(f"deadman: после выключения в RAM нет: {name}", not present)
-
-
-TOTP_PASS = "vh-test-totp-recovery"
 
 
 def step_totp(a):
