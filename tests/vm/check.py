@@ -382,6 +382,15 @@ def step_totp(a):
         ser.expect(r"[Pp]assphrase", 600)
         time.sleep(2)
         ser.send(vhvm.LUKS_PASS)
+        m = ser.expect(r"login: ?$|Введите RESEAL: ", 900)
+        check("tpm2-totp: после генерации перезапечатывание не требуется", m.group(0).startswith("login"))
+        if not m.group(0).startswith("login"):
+            ser.send("RESEAL")
+            ser.expect(r"Пароль восстановления[^:]*: ", 60)
+            time.sleep(1)
+            ser.send(TOTP_PASS)
+        else:
+            ser.buf = "login: "
         vhvm.login(ser, "admin", vhvm.USER_PASS)
         root_shell(ser)
     finally:
