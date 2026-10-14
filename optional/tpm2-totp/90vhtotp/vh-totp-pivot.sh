@@ -8,6 +8,12 @@ RESEAL=/sysroot/var/lib/vh/totp-reseal
 tty=/dev/console
 # Пароль восстановления tpm2-totp: 0.3.0 принимает его только аргументом -P (stdin не
 # читает). В initramfs других пользователей нет — аргумент никто, кроме нас, не увидит.
+# Корень в initramfs смонтирован только для чтения (cmdline «ro»): флаг снимается
+# временным перемонтированием (найдено на стенде — иначе генерация повторялась бы)
+clear_flag() {
+	mount -o remount,rw /sysroot && rm -f "$1"
+	mount -o remount,ro /sysroot
+}
 ask_pw() {
 	stty -echo < $tty 2>/dev/null
 	printf '%s' "$1" > $tty
@@ -28,7 +34,7 @@ if [ -e "$GEN" ]; then
 		[ -n "$p1" ] && [ "$p1" = "$p2" ] && break
 		echo "не совпало или пусто — ещё раз" > $tty
 	done
-	tpm2-totp -p "$PCRS" -P "$p1" generate > $tty 2>&1 && rm -f "$GEN"
+	tpm2-totp -p "$PCRS" -P "$p1" generate > $tty 2>&1 && clear_flag "$GEN"
 	p1="" p2="" pw=""
 	echo "Нажмите Enter, когда код добавлен в приложение…" > $tty; read -r _ < $tty
 elif [ -e "$RESEAL" ]; then
@@ -44,7 +50,7 @@ elif [ -e "$RESEAL" ]; then
 	read -r ans < $tty
 	if [ "$ans" = RESEAL ]; then
 		ask_pw "Пароль восстановления tpm2-totp: "
-		tpm2-totp -p "$PCRS" -P "$pw" reseal > $tty 2>&1 && rm -f "$RESEAL" \
+		tpm2-totp -p "$PCRS" -P "$pw" reseal > $tty 2>&1 && clear_flag "$RESEAL" \
 			&& echo "перезапечатано; при следующей загрузке код совпадёт" > $tty
 		pw=""
 	else

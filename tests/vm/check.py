@@ -300,10 +300,13 @@ def dump_after_poweroff(a, tag, prepare_cmds):
         vm.stop()
 
 
+# Маркер собирается внутри VM из частей: полная строка никогда не набирается по
+# последовательной консоли (её эхо осталось бы в буфере UART, который ядро не освобождает,
+# и тест находил бы маркер там, а не в данных)
 MARKERS = [
-    "printf 'VHMARK_READ_7f3a%.0s' $(seq 1 2000) > /home/admin/read.txt; sync; cat /home/admin/read.txt >/dev/null",
-    "( python3 -c 'import time; s=\"VHMARK_PROC_91c2\"*4000; time.sleep(9999)' & )",
-    "printf 'VHMARK_DIRTY_c40e%.0s' $(seq 1 2000) > /home/admin/dirty.txt",
+    "a=VHMARK; printf \"${a}_READ_7f3a%.0s\" $(seq 1 2000) > /home/admin/read.txt; sync; cat /home/admin/read.txt >/dev/null",
+    "( python3 -c 'import time; s=(\"VHMARK\"+\"_PROC_91c2\")*4000; time.sleep(9999)' & )",
+    "a=VHMARK; printf \"${a}_DIRTY_c40e%.0s\" $(seq 1 2000) > /home/admin/dirty.txt",
 ]
 
 
@@ -420,9 +423,18 @@ def step_modules(a):
         shutdown(vm, ser)
 
 
+def step_deadmandump(a):
+    """Только дамп RAM после выключения с уже включённым optional/deadman."""
+    ok_key, res = dump_after_poweroff(a, "deadman", MARKERS)
+    check("стенд: ключ тома получен для поиска", ok_key)
+    print("с deadman:", res)
+    for name, present in res.items():
+        check(f"deadman: после выключения в RAM нет: {name}", not present)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["base", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "totp", "modules", "all"])
+    ap.add_argument("step", choices=["base", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "deadmandump", "totp", "modules", "all"])
     ap.add_argument("--dir", default=os.path.join(vhvm.REPO, "tests", "vm", "work"))
     ap.add_argument("--mem", type=int, default=3072)
     ap.add_argument("--smp", type=int, default=4)
@@ -431,7 +443,7 @@ def main():
     a = ap.parse_args()
     steps = {"base": [step_base], "enroll": [step_enroll], "sb": [step_sb], "lock": [step_lock],
              "desktop": [step_desktop], "strictnet": [step_strictnet], "deadman": [step_deadman],
-             "totp": [step_totp], "modules": [step_modules],
+             "totp": [step_totp], "modules": [step_modules], "deadmandump": [step_deadmandump],
              "all": [step_base, step_enroll, step_sb, step_lock, step_desktop]}[a.step]
     for s in steps:
         s(a)
