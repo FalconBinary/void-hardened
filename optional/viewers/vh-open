@@ -53,7 +53,10 @@ def open_nofollow(path):
 
 def kind_of(fd, name):
     """Тип по сигнатуре (а не только по расширению): без libmagic вне песочницы."""
-    rfd = os.open(f"/proc/self/fd/{fd}", os.O_RDONLY | os.O_NOFOLLOW)
+    # переоткрытие O_PATH-дескриптора через «магическую» ссылку /proc/self/fd: она ведёт
+    # на тот же объект файла, а не на путь (подмена по пути невозможна). O_NOFOLLOW здесь
+    # нельзя — ядро ответило бы ELOOP (найдено на стенде)
+    rfd = os.open(f"/proc/self/fd/{fd}", os.O_RDONLY)
     head = os.read(rfd, 64)
     os.close(rfd)
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
