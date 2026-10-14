@@ -2,7 +2,8 @@
 # void-hardened: swap в сжатой памяти (zram), без swap-раздела и без zramen (docs/11).
 [ -e /sys/block/zram0 ] || modprobe zram num_devices=1 || return 0
 if [ "$(cat /sys/block/zram0/disksize)" = 0 ]; then
-    msg "vh: zram (@VH_ZRAM_ALGO@, @VH_ZRAM_PERCENT@% RAM)..."
+    # msg передаёт текст в printf как формат: знак процента в нём недопустим
+    msg "vh: zram (@VH_ZRAM_ALGO@, @VH_ZRAM_PERCENT@ процентов RAM)..."
     echo @VH_ZRAM_ALGO@ > /sys/block/zram0/comp_algorithm
     _vh_kb=$(awk '/MemTotal/ {print int($2 * @VH_ZRAM_PERCENT@ / 100)}' /proc/meminfo)
     echo "${_vh_kb}K" > /sys/block/zram0/disksize

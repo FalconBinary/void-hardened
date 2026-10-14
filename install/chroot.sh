@@ -91,13 +91,15 @@ fi
 
 # ---------------------------------------------------------------- сеть (docs/06, docs/07)
 say "unbound, chrony, iwd, resolv.conf"
-install -d -m 0750 -o _unbound -g _unbound /etc/unbound/var
+# var/ — единственное, что пишет _unbound (обновления ключа по RFC 5011). 0755 и root.key
+# 0644: корневой ключ DNSSEC публичен, а root до сброса прав читает его без dac_override
+install -d -m 0755 -o _unbound -g _unbound /etc/unbound/var
 anchor=""
 for f in /etc/dns/root.key /usr/share/dnssec-anchors/root.key /etc/unbound/root.key; do
 	[ -s "$f" ] && { anchor=$f; break; }
 done
 [ -n "$anchor" ] || die "нет корневого ключа DNSSEC (пакет dnssec-anchors)"
-install -m 0640 -o _unbound -g _unbound "$anchor" /etc/unbound/var/root.key
+install -m 0644 -o _unbound -g _unbound "$anchor" /etc/unbound/var/root.key
 install -m 0644 /etc/ssl/certs/ca-certificates.crt /etc/unbound/ca-bundle.pem
 unbound-checkconf /etc/unbound/unbound.conf >/dev/null || die "unbound.conf с ошибкой"
 install -d -m 0750 -o chrony -g chrony /var/lib/chrony

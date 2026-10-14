@@ -1,17 +1,19 @@
-# void-hardened: права узлов устройств (docs/05). Файл назван 99-…, чтобы идти
-# после правил пакетов (50-udev-default, tpm-udev) и перекрывать их.
+# void-hardened: права узлов устройств (docs/05).
+# Присваивания «:=» — окончательные: их не перекроет правило, идущее позже. Порядок
+# файлов лексический, и «tpm-udev.rules» пакета tpm2-tss (без числа в имени) идёт
+# ПОСЛЕ «99-…» — с обычным «=» он возвращал /dev/tpm0 группе _tss (найдено на стенде).
 
 # Render node GPU: в Void по умолчанию 0666 — драйвер i915 доступен любому процессу.
 # Оставляем только группе render (повседневный пользователь и браузер).
-SUBSYSTEM=="drm", KERNEL=="renderD*", GROUP="render", MODE="0660"
+SUBSYSTEM=="drm", KERNEL=="renderD*", GROUP:="render", MODE:="0660"
 # Запись в /dev/rfkill снимает блокировку радио — только root (iwd, bluetoothd).
-KERNEL=="rfkill", MODE="0600"
+KERNEL=="rfkill", OWNER:="root", GROUP:="root", MODE:="0600"
 # TPM: работа с иерархиями — только root (tpm2-tss даёт группе tss).
-KERNEL=="tpm[0-9]*", OWNER="root", GROUP="root", MODE="0600"
-KERNEL=="tpmrm[0-9]*", OWNER="root", GROUP="root", MODE="0600"
+KERNEL=="tpm[0-9]*", OWNER:="root", GROUP:="root", MODE:="0600"
+KERNEL=="tpmrm[0-9]*", OWNER:="root", GROUP:="root", MODE:="0600"
 # Сторожевой таймер: открытие без «поглаживания» = перезагрузка.
-KERNEL=="watchdog*", OWNER="root", GROUP="root", MODE="0600"
+KERNEL=="watchdog*", OWNER:="root", GROUP:="root", MODE:="0600"
 # /dev/kvm в Void 0666; если KVM разрешён (VH_VIRT=yes) — только группе kvm.
-KERNEL=="kvm", GROUP="kvm", MODE="0660"
+KERNEL=="kvm", GROUP:="kvm", MODE:="0660"
 # Яркость экрана: запись в sysfs группе backlight, без SUID-утилит.
 SUBSYSTEM=="backlight", ACTION=="add", RUN+="/usr/bin/chgrp backlight /sys%p/brightness", RUN+="/usr/bin/chmod g+w /sys%p/brightness"

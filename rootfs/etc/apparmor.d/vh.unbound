@@ -1,5 +1,6 @@
 # void-hardened: unbound — локальный резолвер (docs/06). После старта работает от
 # _unbound в chroot /etc/unbound; писать может только в /etc/unbound/var (root.key).
+# Каталог var — 0755: root читает root.key до сброса прав без dac_override.
 abi <abi/4.0>,
 include <tunables/global>
 
@@ -18,9 +19,13 @@ profile vh.unbound /usr/bin/unbound flags=(attach_disconnected) {
   network inet6 stream,
   network inet6 dgram,
   network unix dgram,
+  # netlink route: unbound ≥ 1.18 при старте перечисляет интерфейсы (getifaddrs);
+  # без этого — «could not open ports» и перезапуск по кругу (найдено на стенде)
+  network netlink raw,
   deny network alg,
   deny network packet,
-  deny network netlink,
+  # SO_*BUFFORCE не нужен: unbound обходится без него, отказ — без записи в журнал
+  deny capability net_admin,
 
   /usr/bin/unbound mr,
   /etc/unbound/ r,

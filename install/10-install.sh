@@ -137,7 +137,14 @@ VH_DOT_IPS=$(for u in $VH_DNS_UPSTREAMS; do echo "${u%%@*}"; done | sort -u | pa
 VH_UNBOUND_FORWARDS=$(for u in $VH_DNS_UPSTREAMS; do printf '\tforward-addr: %s\n' "$u"; done)
 VH_CHRONY_SERVERS=$(for s in $VH_NTS_SERVERS; do printf 'server %s iburst nts\n' "$s"; done)
 VH_SHM_SIZE="25%"
-export VH_CMDLINE VH_DOT_IPS VH_UNBOUND_FORWARDS VH_CHRONY_SERVERS VH_SHM_SIZE
+if [ "$VH_IPV6" = no ]; then
+	# IPv6 выключен в ядре: адреса AAAA из ответов вырезаются (как «частные») — программы
+	# не тратят время на попытки IPv6, которые не могут удаться
+	VH_UNBOUND_AAAA=$'\t# IPv6 выключен (VH_IPV6=no): записи AAAA не отдаются\n\tprivate-address: ::/0'
+else
+	VH_UNBOUND_AAAA=""
+fi
+export VH_CMDLINE VH_DOT_IPS VH_UNBOUND_FORWARDS VH_CHRONY_SERVERS VH_SHM_SIZE VH_UNBOUND_AAAA
 ok "LUKS $VH_LUKS_UUID, корень $VH_ROOT_UUID, ESP $VH_ESP_UUID"
 
 # ---------------------------------------------------------------- bootstrap

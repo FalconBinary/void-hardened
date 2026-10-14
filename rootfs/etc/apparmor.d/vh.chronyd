@@ -15,6 +15,9 @@ profile vh.chronyd /usr/bin/chronyd {
   capability sys_resource,
   capability sys_nice,
   capability dac_override,
+  # root до сброса прав заходит в /var/lib/chrony (0750 chrony): ядро сначала спрашивает
+  # dac_read_search — без него отказ в журнале при каждом старте
+  capability dac_read_search,
 
   network inet stream,
   network inet dgram,

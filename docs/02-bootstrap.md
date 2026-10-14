@@ -58,6 +58,10 @@ nonfree нужен ради одного пакета — `intel-ucode` (зак�
 | chsh, chfn | util-linux | смена шелла и GECOS пользователем |
 | expiry, gpasswd | shadow | срок пароля, пароли групп |
 | newuidmap, newgidmap | shadow | отображение subuid в user namespace (podman и т. п.) |
+| wall, write | util-linux | SGID tty: запись в чужие терминалы |
+| utempter | libutempter (зависимость foot) | SGID utmp: запись «кто вошёл»; без неё foot просто не пишет utmp |
+| xbps-uchroot | xbps | SUID: chroot для сборки пакетов (xbps-src) |
+| dbus-daemon-launch-helper | dbus | SUID: запуск сервисов D-Bus по требованию — здесь их запускает runit |
 
 **noextract для прошивок** (`40-vh-firmware.conf`, при `VH_FIRMWARE_TRIM=yes`):
 `linux-firmware-network` — 440 МБ прошивок всех сетевых чипов подряд (Qualcomm,
@@ -87,9 +91,11 @@ noextract=!/usr/lib/firmware/rtl_nic/*      # RTL8111/8168
 `setcap` в скрипте пакета — capability тоже снимается, а ping работает через
 ICMP-сокеты для группы `netdiag` ([05](05-system.md)).
 
-> **Проверено по пакетам Void:** `wall`/`write` здесь без SGID, `seatd-launch` и
-> `dbus-daemon-launch-helper` — без SUID. Промпт предполагал обратное — исключать их не
-> нужно.
+> **Проверено на стенде** (`find / -xdev -perm -4000 -o -perm -2000` после установки):
+> промпт прав насчёт `wall`, `write` и `dbus-daemon-launch-helper`, а ещё нашлись
+> `xbps-uchroot` и `utempter`. `seatd-launch` в Void — без SUID. Остаются только `doas`
+> и `unix_chkpwd`; единственная file capability — `cap_syslog` у `nanoklogd` (socklog
+> читает журнал ядра без root).
 
 ## 3. Набор пакетов
 

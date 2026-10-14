@@ -63,8 +63,10 @@ findmnt /boot/efi >/dev/null && unk "ESP смонтирован (должен �
 sec "SUID, capabilities, права устройств"
 suid=$(find / -xdev \( -perm -4000 -o -perm -2000 \) -type f 2>/dev/null | sort | paste -sd' ' -)
 chk "SUID/SGID" "$suid" "/usr/bin/doas /usr/bin/unix_chkpwd"
-caps=$(getcap -r /usr 2>/dev/null)
-[ -z "$caps" ] && ok "file capabilities: нет" || bad "file capabilities: $caps"
+# nanoklogd (socklog-void) читает журнал ядра от непривилегированного пользователя —
+# ему нужна cap_syslog; это единственная ожидаемая file capability
+caps=$(getcap -r /usr 2>/dev/null | grep -v '^/usr/bin/nanoklogd cap_syslog=ep$')
+[ -z "$caps" ] && ok "file capabilities: только nanoklogd cap_syslog" || bad "file capabilities: $caps"
 for d in /dev/dri/renderD*; do
 	[ -e "$d" ] && chk "$d" "$(stat -c '%a %U:%G' "$d")" "660 root:render"
 done
@@ -91,6 +93,9 @@ id -nG "$VH_USER" | grep -qw wheel && bad "$VH_USER в wheel" || ok "$VH_USER н
 for g in input video kvm; do id -nG "$VH_USER" | grep -qw "$g" && bad "$VH_USER в группе $g"; done
 doas -C /etc/doas.conf >/dev/null 2>&1 && ok "doas.conf синтаксически верен" || bad "doas.conf с ошибкой"
 
+nmi=$(cat /proc/sys/kernel/nmi_watchdog 2>/dev/null || echo ?)
+[ "$nmi" = 1 ] && ok "NMI-сторож включён (hardlockup_panic работает)" || unk "NMI-сторож = $nmi (в VM без PMU это нормально; на железе должен быть 1)"
+
 sec "Сервисы"
 for sv in dbus iwd unbound chronyd seatd socklog-unix nanoklogd vh-acpid; do
 	sv status "$sv" 2>/dev/null | grep -q '^run:' && ok "сервис $sv работает" || bad "сервис $sv не работает"
@@ -106,7 +111,8 @@ fi
 
 sec "Сеть"
 nft list table inet vh >/dev/null 2>&1 && ok "nftables: таблица vh" || bad "nftables: нет таблицы vh"
-listen=$(ss -Htulpn 2>/dev/null | awk '{print $1" "$5}' | sort -u | paste -sd';' -)
+# клиент DHCP (dhcpcd, iwd) держит сокет на порту 68 — это ответы сервера, не сервис
+listen=$(ss -Htulpn 2>/dev/null | awk '{print $1" "$5}' | grep -v '^udp .*:68$' | sort -u | paste -sd';' -)
 case $listen in
 	"tcp 127.0.0.1:53;udp 127.0.0.1:53"|"udp 127.0.0.1:53;tcp 127.0.0.1:53") ok "слушает только unbound на 127.0.0.1:53" ;;
 	*) bad "открытые порты: $listen" ;;

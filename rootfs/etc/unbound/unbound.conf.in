@@ -53,6 +53,7 @@ server:
 	private-address: ::ffff:0:0/96
 	private-address: fc00::/7
 	private-address: fe80::/10
+@VH_UNBOUND_AAAA@
 	# --- Firefox не включит DoH сам (канареечный домен)
 	local-zone: "use-application-dns.net." always_nxdomain
 	# --- DoT: проверка сертификата апстрима по имени после «#»

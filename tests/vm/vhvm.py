@@ -97,8 +97,12 @@ class Serial:
         спросит пароль (doas), ответить password."""
         tag = f"__VH{int(time.time() * 1000) % 10**9}__"
         self.buf = ""
-        # маркер — отдельной строкой: иначе он испортил бы завершение heredoc
-        self.send(f"{cmd}\necho {tag}rc=$?")
+        if "\n" in cmd:
+            # heredoc: маркер — отдельной строкой, иначе он испортил бы завершение heredoc
+            self.send(f"{cmd}\necho {tag}rc=$?")
+        else:
+            # одной строкой: иначе строку с маркером прочитал бы doas как пароль
+            self.send(f"{cmd}; echo {tag}rc=$?")
         while True:
             m = self.expect(re.escape(tag) + r"rc=(\d+)|doas \([^)]*\) password: ?", timeout)
             if m.group(1) is not None:

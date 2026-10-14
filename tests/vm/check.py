@@ -64,9 +64,9 @@ def step_base(a):
         rc, out = run(ser, "doas sv status /var/service/*")
         bad = [l for l in out.splitlines() if l.startswith(("down:", "fail:", "warning:"))]
         check("все сервисы runit работают", not bad, "; ".join(bad))
-        rc, out = run(ser, "for i in 1 2 3 4 5 6 7 8 9 10 11 12; do getent hosts voidlinux.org && break; sleep 5; done")
+        rc, out = run(ser, "ok=1; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do getent hosts voidlinux.org && { ok=0; break; }; sleep 5; done; test $ok = 0")
         check("DNS через unbound (DoT)", rc == 0)
-        rc, out = run(ser, "for i in $(seq 1 24); do doas chronyc -n -N authdata | awk 'NR>2 && $2==\"NTS\" && $4>0 {f=1} END {exit !f}' && break; sleep 5; done; doas chronyc -N authdata")
+        rc, out = run(ser, "ok=1; for i in $(seq 1 24); do doas chronyc -n -N authdata | awk 'NR>2 && $2==\"NTS\" && $4>0 {f=1} END {exit !f}' && { ok=0; break; }; sleep 5; done; doas chronyc -N authdata; test $ok = 0")
         check("chrony: NTS-источники с ключами", rc == 0)
         rc, out = run(ser, "doas vh-audit", timeout=600)
         m = re.search(r"Итог: ok (\d+), FAIL (\d+), не проверено (\d+)", out)
@@ -125,7 +125,7 @@ def step_lock(a):
         check("modules_disabled=1 к стадии 2", out.strip().splitlines()[0].strip().endswith("1") if out.strip() else False)
         bad = [l for l in out.splitlines() if l.startswith(("down:", "fail:"))]
         check("сервисы работают после блокировки модулей", not bad, "; ".join(bad))
-        rc, out = run(ser, "for i in 1 2 3 4 5 6; do getent hosts voidlinux.org && break; sleep 5; done")
+        rc, out = run(ser, "ok=1; for i in 1 2 3 4 5 6; do getent hosts voidlinux.org && { ok=0; break; }; sleep 5; done; test $ok = 0")
         check("DNS после блокировки модулей", rc == 0)
     finally:
         shutdown(vm, ser)

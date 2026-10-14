@@ -14,7 +14,9 @@ for f in /usr/bin/passwd /usr/bin/chage /usr/bin/mount /usr/bin/umount; do
 done
 # Не нужны никому — исключены через noextract; если всё же появились — снять.
 for f in /usr/bin/su /usr/bin/sg /usr/bin/newgrp /usr/bin/chsh /usr/bin/chfn \
-	/usr/bin/expiry /usr/bin/gpasswd /usr/bin/newuidmap /usr/bin/newgidmap; do
+	/usr/bin/expiry /usr/bin/gpasswd /usr/bin/newuidmap /usr/bin/newgidmap \
+	/usr/bin/wall /usr/bin/write /usr/lib/utempter/utempter /usr/bin/xbps-uchroot \
+	/usr/libexec/dbus-daemon-launch-helper; do
 	[ -e "$f" ] && chmod u-s,g-s "$f" && say "SUID/SGID снят: $f (ожидался noextract)"
 done
 # ping: ICMP-сокеты по net.ipv4.ping_group_range вместо cap_net_raw.

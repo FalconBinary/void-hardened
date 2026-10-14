@@ -30,7 +30,8 @@ net.ipv4.icmp_echo_ignore_broadcasts = 1
 net.ipv4.icmp_ignore_bogus_error_responses = 1
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_rfc1337 = 1
-net.ipv4.tcp_fastopen = 0                # cookie TFO — идентификатор для трекинга
+# cookie TFO — идентификатор для трекинга
+net.ipv4.tcp_fastopen = 0
 # --- (S) ping через ICMP-сокеты без cap_net_raw — только группе netdiag
 net.ipv4.ping_group_range = @VH_NETDIAG_GID@ @VH_NETDIAG_GID@
 
@@ -38,8 +39,10 @@ net.ipv4.ping_group_range = @VH_NETDIAG_GID@ @VH_NETDIAG_GID@
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_mtu_probing = 1             # PMTU black hole за VPN
-net.ipv4.tcp_notsent_lowat = 131072      # меньше задержка у интерактивных потоков
+# PMTU black hole за VPN
+net.ipv4.tcp_mtu_probing = 1
+# меньше задержка у интерактивных потоков
+net.ipv4.tcp_notsent_lowat = 131072
 # --- (P) буферы под QUIC/HTTP3 (программа получает их, только если просит)
 net.core.rmem_max = 7500000
 net.core.wmem_max = 7500000

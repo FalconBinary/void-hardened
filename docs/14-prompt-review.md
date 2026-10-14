@@ -36,7 +36,7 @@ unbound 1.26, chrony 4.8, dhcpcd 10.3, foot 1.28, конфиг ядра Void 6.1
 | 6 | «Оценить usbguard» | usbguard в Void зависит от **polkit**, который промпт запрещает | USB-авторизация правилами udev (`optional/usb-auth`) |
 | 7 | `xbps-query -Rs vlock` | vlock в репозитории нет | не нужен: админ входит отдельно, VT сеанса не видит ввод tty2 |
 | 8 | Нет компиляторов | `dracut-uefi` тянет `binutils` (`as`, `ld`) | остаточный риск, записан (C-компилятора нет, /home noexec) |
-| 9 | seatd-launch, dbus-daemon-launch-helper, wall/write — SUID/SGID | В пакетах Void — без SUID/SGID | `noextract` для них не нужен |
+| 9 | seatd-launch, dbus-daemon-launch-helper, wall/write — SUID/SGID | Проверено `find -perm` на стенде: `seatd-launch` без SUID; `dbus-daemon-launch-helper` — SUID, `wall`/`write` — SGID tty, а ещё SUID у `xbps-uchroot` и SGID у помощника `utempter` (зависимость foot) | все пятеро — в `noextract`; `vh-suid-strip` снимает биты, если файл всё же появился |
 | 10 | fstab: hidepid для /proc, noexec для /dev/shm, /run, /dev | runit монтирует их в `00-pseudofs.sh` **до** fstab; `mount -a` уже смонтированное пропускает — опции из fstab молча не применяются | перемонтирование в `04-vh-mounts.sh` |
 | 11 | «dGPU обесточен» | Без драйвера GTX 1650 остаётся в D0 (~5–8 Вт); механизм не описан | правило udev: runtime PM + удаление HDMI-аудио функции → корневой порт в D3cold |
 | 12 | Вариант A (только iGPU) без оговорок | На многих ноутбуках с GTX 1650 HDMI разведён на dGPU — внешний монитор перестанет работать | проба показывает, к какому GPU подключён порт; `VH_GPU=nouveau` |
@@ -98,7 +98,28 @@ iwd с WPA3/PMF/случайным MAC; `kill -KILL -1` после сеанса;
   понимает как конец строки — правильный yescrypt-хэш «не находился»; та же ошибка была
   в `vh-audit`;
 - у `vh-wlfilter` и `browser-sandbox` не было бита исполнения: фильтр Wayland не
-  запустился бы, браузер не открылся бы.
+  запустился бы, браузер не открылся бы;
+- **unbound падал по кругу**: версия 1.26 при старте перечисляет интерфейсы
+  (`getifaddrs` через netlink), а профиль AppArmor запрещал netlink целиком —
+  «could not open ports». Профиль разрешает `netlink raw`;
+- комментарии в конце строк `/etc/sysctl.d/*.conf`: `sysctl -p` из procps их не
+  понимает и пишет в ядро «значение # текст» — у числовых параметров ядро отбрасывает
+  хвост по случайности. Комментарии перенесены на отдельные строки;
+- функция `msg` стадии 1 runit передаёт текст в `printf` как формат: «50%» в
+  сообщении ломало вывод;
+- правило udev `99-vh-devices.rules` не перекрывало `tpm-udev.rules` пакета tpm2-tss:
+  порядок файлов лексический, «tpm-…» идёт после «99-…». Теперь присваивания
+  окончательные (`MODE:=`);
+- SUID/SGID у `wall`, `write`, `dbus-daemon-launch-helper`, `xbps-uchroot`, `utempter`
+  (см. п. 9) — в `noextract`;
+- unbound отдавал записи AAAA при выключенном IPv6 — теперь `private-address: ::/0`
+  (при `VH_IPV6=no`).
+
+Что подтвердил стенд: загрузка Limine → UKI → LUKS2 → runit; cmdline только из UKI;
+lockdown=confidentiality; LSM `lockdown,capability,landlock,yama,apparmor`; DoT через
+unbound; DNSSEC отвергает `dnssec-failed.org`; защита от DNS rebinding
+(`192.168.1.1.nip.io` не резолвится); chrony — 4 источника по NTS; `xbps-pkgdb -a`
+чист при обрезанных прошивках; `vh-acpid` находит кнопку питания.
 
 ## 6. Чего нельзя проверить без вашего ноутбука
 
