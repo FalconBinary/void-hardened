@@ -115,7 +115,7 @@ def main():
     target = f"/input/{name}"
     sfd = seccomp_fd()
     b = ["bwrap",
-         "--unshare-all", "--disable-userns", "--assert-userns-disabled",
+         "--unshare-all", "--unshare-user", "--disable-userns", "--assert-userns-disabled",
          "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv",
          "--ro-bind", "/usr", "/usr",
          "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin",
