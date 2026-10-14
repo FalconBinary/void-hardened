@@ -432,7 +432,7 @@ def step_modules(a):
         rc, out = run(ser, as_user("user", "printf 'VH-OPEN-OK\\n' > /home/xfer/t.txt; vh-open /home/xfer/t.txt < /dev/null | cat"))
         check("viewers: vh-open показывает текст в песочнице (bwrap + seccomp + fd)", "VH-OPEN-OK" in out, out[-300:].replace("\n", " "))
         rc, out = run(ser, as_user("user", "ln -sf /etc/passwd /home/xfer/evil.txt; vh-open /home/xfer/evil.txt < /dev/null | cat"))
-        check("viewers: симлинк отвергнут", rc != 0 and "root:x:" not in out)
+        check("viewers: симлинк отвергнут", "не обычный файл" in out and "root:x:" not in out)
         rc, out = run(ser, "printf 'lock\\n' | /root/vh/optional/home-lockdown/enable")
         check("home-lockdown: включён", rc == 0, out[-200:].replace("\n", " "))
         rc, out = run(ser, as_user("user", "touch /home/user/.bash_login"))
