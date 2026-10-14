@@ -68,7 +68,10 @@ def root_shell(ser):
     time.sleep(1)
     ser.send(vhvm.USER_PASS)
     time.sleep(2)
-    ser.send("export PS1='vh# ' TERM=dumb; stty -echo cols 250")
+    # без истории: набранные команды не должны оседать в ~/.bash_history (тест deadman ищет
+    # маркеры в RAM — копии из файла истории дали бы ложный результат)
+    ser.send("unset HISTFILE; export PS1='vh# ' TERM=dumb; stty -echo cols 250; "
+             "rm -f /root/.bash_history /home/*/.bash_history")
     ser.expect(r"vh# ", 60)
 
 
@@ -297,6 +300,14 @@ def dump_after_poweroff(a, tag, prepare_cmds):
             if sz > 0 and sz == last:
                 break
             last = sz
+        import mmap
+        with open(dump, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+            for needle in (b"VHMARK_READ_7f3a", b"VHMARK_PROC_91c2", b"VHMARK_DIRTY_c40e"):
+                pos, n = m.find(needle), 0
+                while pos >= 0 and n < 3:
+                    ctx = m[max(0, pos - 120):pos + 40]
+                    print(f"--- {needle.decode()} @{pos}:", repr(bytes(c if 32 <= c < 127 else 46 for c in ctx)))
+                    pos, n = m.find(needle, pos + len(needle)), n + 1
         res = find_in_dump(dump, {
             "ключ тома (первые 32 байта)": key[:32] if key else b"\x00NOKEY\x00",
             "маркер прочитанного файла": b"VHMARK_READ_7f3a",
