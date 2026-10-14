@@ -8,6 +8,7 @@
   check.py desktop    — mango без экрана, фильтр Wayland, браузер в песочнице под AppArmor
   check.py strictnet  — optional/strict-net: сеть людей, временные разрешения
   check.py deadman    — optional/deadman: дамп RAM после выключения без модуля и с ним
+  check.py totp       — optional/tpm2-totp на swtpm: генерация, код до пароля, PCR 14
   check.py all        — всё по порядку
 
 Каждый шаг — отдельная загрузка VM. Итог: строки «PASS/FAIL …» в конце вывода.
@@ -62,12 +63,23 @@ def root_shell(ser):
 
 def boot(a, extra=None):
     vm = vhvm.VM(a.dir, a.mem, a.smp)
-    ser = vm.start(extra or [])
+    extra = list(extra or [])
+    if getattr(a, "repo", False):
+        # свежая копия репозитория на CD: /root/vh в системе обновляется перед проверкой
+        iso = os.path.join(vm.d, "repo.iso")
+        vhvm.make_repo_iso(iso)
+        extra += ["-drive", f"file={iso},if=none,id=repo,media=cdrom,readonly=on", "-device", "ide-cd,drive=repo"]
+    ser = vm.start(extra)
     ser.expect(r"[Pp]assword|[Pp]assphrase", 1800)
     time.sleep(2)
     ser.send(vhvm.LUKS_PASS)
     vhvm.login(ser, "admin", vhvm.USER_PASS)
     root_shell(ser)
+    if getattr(a, "repo", False):
+        run(ser, "mkdir -p /tmp/r && mount -o ro /dev/sr0 /tmp/r && rm -rf /tmp/vhn && mkdir /tmp/vhn && "
+                 "tar -xf /tmp/r/vh.tar -C /tmp/vhn && umount /tmp/r && "
+                 "cp -a /tmp/vhn/void-hardened/install /tmp/vhn/void-hardened/optional "
+                 "/tmp/vhn/void-hardened/rootfs /tmp/vhn/void-hardened/tools /root/vh/")
     return vm, ser
 
 
@@ -288,16 +300,107 @@ def step_deadman(a):
         check(f"deadman: после выключения в RAM нет: {name}", not present)
 
 
+TOTP_PASS = "vh-test-totp-recovery"
+
+
+def step_totp(a):
+    """optional/tpm2-totp на swtpm: генерация в initramfs, код до пароля LUKS, PCR 14."""
+    vm, ser = boot(a)
+    try:
+        rc, out = run(ser, "printf 'записал\\n' | /root/vh/optional/tpm2-totp/enable", timeout=2400)
+        check("tpm2-totp: включён (lockout, модуль dracut, UKI)", rc == 0, out[-300:].replace("\n", " "))
+    finally:
+        shutdown(vm, ser)
+    # загрузка 1: после пароля LUKS initramfs генерирует секрет
+    vm = vhvm.VM(a.dir, a.mem, a.smp)
+    ser = vm.start([])
+    try:
+        ser.expect(r"[Pp]assphrase", 1800)
+        time.sleep(2)
+        ser.send(vhvm.LUKS_PASS)
+        ser.expect(r"Пароль восстановления: ", 600)
+        time.sleep(1)
+        ser.send(TOTP_PASS)
+        ser.expect(r"Ещё раз: ", 60)
+        time.sleep(1)
+        ser.send(TOTP_PASS)
+        m = ser.expect(r"Нажмите Enter[^\n]*", 600)
+        check("tpm2-totp: секрет сгенерирован в initramfs (QR показан)", "otpauth://" in ser.alltext or "█" in ser.alltext)
+        ser.send("")
+        vhvm.login(ser, "admin", vhvm.USER_PASS)
+        root_shell(ser)
+        rc, out = run(ser, "tpm2_pcrread sha256:14")
+        check("tpm2-totp: PCR 14 расширен после показа", "0x0000000000000000000000000000000000000000000000000000000000000000" not in out)
+        rc, out = run(ser, "tpm2-totp -p 0,2,4,7,14 calculate")
+        check("tpm2-totp: работающая система код не вычисляет", rc != 0)
+        rc, out = run(ser, "test ! -e /var/lib/vh/totp-generate")
+        check("tpm2-totp: флаг генерации снят", rc == 0)
+    finally:
+        shutdown(vm, ser)
+    # загрузка 2: код показывается до запроса пароля
+    vm = vhvm.VM(a.dir, a.mem, a.smp)
+    ser = vm.start([])
+    try:
+        ser.expect(r"сверьте код TOTP", 1800)
+        m = ser.expect(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d: (\d{6})", 300)
+        check("tpm2-totp: код TOTP показан до пароля LUKS", True, m.group(1))
+        ser.expect(r"[Pp]assphrase", 600)
+        time.sleep(2)
+        ser.send(vhvm.LUKS_PASS)
+        vhvm.login(ser, "admin", vhvm.USER_PASS)
+        root_shell(ser)
+    finally:
+        shutdown(vm, ser)
+
+
+def step_modules(a):
+    """Быстрые проверки модулей: dns-pin, viewers, home-lockdown, session-apparmor."""
+    vm, ser = boot(a)
+    try:
+        rc, out = run(ser, "printf 'pin\\n' | /root/vh/optional/dns-pin/enable", timeout=600)
+        check("dns-pin: пин записан, DNS работает", rc == 0 and "работает" in out, out[-300:].replace("\n", " "))
+        rc, out = run(ser, "grep -c BEGIN /etc/unbound/ca-pin.pem /etc/chrony/nts-pin.pem")
+        print(out)
+        rc, out = run(ser, "sed -i 's/@853#dns.quad9.net/@853#example.com/' /etc/unbound/unbound.conf; "
+                           "sed -i 's/@853#dns.mullvad.net/@853#example.com/' /etc/unbound/unbound.conf; "
+                           "sv restart unbound; sleep 3; getent hosts kernel.org")
+        check("dns-pin: чужое имя в forward-addr ломает резолв (отказ закрытый)", rc != 0)
+        run(ser, "/root/vh/optional/dns-pin/disable; sed -i 's/@853#example.com/@853#dns.quad9.net/' /etc/unbound/unbound.conf; true")
+        rc, out = run(ser, "/root/vh/optional/viewers/enable", timeout=1200)
+        check("viewers: включён", rc == 0, out[-200:].replace("\n", " "))
+        rc, out = run(ser, as_user("user", "printf 'VH-OPEN-OK\\n' > /home/xfer/t.txt; vh-open /home/xfer/t.txt < /dev/null"))
+        check("viewers: vh-open показывает текст в песочнице (bwrap + seccomp + fd)", "VH-OPEN-OK" in out, out[-300:].replace("\n", " "))
+        rc, out = run(ser, as_user("user", "ln -sf /etc/passwd /home/xfer/evil.txt; vh-open /home/xfer/evil.txt < /dev/null"))
+        check("viewers: симлинк отвергнут", rc != 0 and "root:x:" not in out)
+        rc, out = run(ser, "printf 'lock\\n' | /root/vh/optional/home-lockdown/enable")
+        check("home-lockdown: включён", rc == 0, out[-200:].replace("\n", " "))
+        rc, out = run(ser, as_user("user", "touch /home/user/.bash_login"))
+        check("home-lockdown: ~/.bash_login создать нельзя", rc != 0)
+        rc, out = run(ser, as_user("user", "touch /home/user/Documents/x && echo ok"))
+        check("home-lockdown: ~/Documents записываем", rc == 0)
+        run(ser, "/root/vh/optional/home-lockdown/disable")
+        rc, out = run(ser, "VH_AA_MODE=', complain' python3 -I - <<'PY'\n"
+                           "import os,re\n"
+                           "t=open('/root/vh/optional/session-apparmor/vh.local.session').read()\n"
+                           "open('/tmp/vh.session.aa','w').write(t.replace('@VH_AA_MODE@',', complain'))\n"
+                           "PY\napparmor_parser -Q -K /tmp/vh.session.aa")
+        check("session-apparmor: профиль компилируется", rc == 0, out[-300:].replace("\n", " "))
+    finally:
+        shutdown(vm, ser)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["base", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "all"])
+    ap.add_argument("step", choices=["base", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "totp", "modules", "all"])
     ap.add_argument("--dir", default=os.path.join(vhvm.REPO, "tests", "vm", "work"))
     ap.add_argument("--mem", type=int, default=3072)
     ap.add_argument("--smp", type=int, default=4)
     ap.add_argument("--user", default="admin")
+    ap.add_argument("--repo", action="store_true", help="обновить /root/vh в системе из рабочей копии")
     a = ap.parse_args()
     steps = {"base": [step_base], "enroll": [step_enroll], "sb": [step_sb], "lock": [step_lock],
              "desktop": [step_desktop], "strictnet": [step_strictnet], "deadman": [step_deadman],
+             "totp": [step_totp], "modules": [step_modules],
              "all": [step_base, step_enroll, step_sb, step_lock, step_desktop]}[a.step]
     for s in steps:
         s(a)

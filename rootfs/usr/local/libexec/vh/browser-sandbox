@@ -24,12 +24,17 @@ work=/tmp/vh-browser/$mode
 rm -rf "$work"
 mkdir -p -m 0700 "/tmp/vh-browser" "$work"
 mkdir -m 0700 "$work/tmp" "$work/shm" "$work/run"
+# seccomp-фильтр песочницы (vh-seccomp browser): socket только UNIX/INET/NETLINK_ROUTE,
+# без MPTCP, SCTP, AF_ALG, AF_PACKET, NETLINK_NETFILTER; без TCP_ULP и BPF на сокетах,
+# монтирования, keyctl, bpf, perf, clone с новыми namespace. bwrap применяет его после
+# сборки песочницы, его наследуют все процессы Firefox поверх их собственного фильтра.
+python3 -I /usr/local/libexec/vh/vh-seccomp browser > "$work/seccomp.bpf"
 printf '%s:x:%s:%s::%s:/usr/bin/nologin\n' "$user" "$uid" "$gid" "$h" > "$work/passwd"
 printf '%s:x:%s:\n' "$user" "$gid" > "$work/group"
 
 set -- \
 	--unshare-all --share-net --unshare-user --disable-userns --assert-userns-disabled \
-	--die-with-parent --new-session --cap-drop ALL --clearenv \
+	--die-with-parent --new-session --cap-drop ALL --clearenv --seccomp 3 \
 	--ro-bind /usr /usr \
 	--symlink usr/bin /bin --symlink usr/bin /sbin \
 	--symlink usr/lib /lib --symlink usr/lib /lib64 \
@@ -102,4 +107,4 @@ set -- "$@" \
 
 # профиль создаётся внутри HOME; каталог должен существовать
 if [ "$mode" = trusted ]; then mkdir -p -m 0700 "$HOME/trusted/profile"; else mkdir -m 0700 "$work/home/profile"; fi
-exec bwrap "$@"
+exec bwrap "$@" 3< "$work/seccomp.bpf"

@@ -442,8 +442,8 @@ overlayfs) с CAP_NET_ADMIN в своём namespace.
    noexec-tmpfs хоста (noexec, пришедший из более привилегированного namespace, в userns
    не снимается), Wayland — только через фильтр `vh-wlfilter`, звук — ограниченный сокет
    PipeWire.
-4. **seccomp** — фильтр из генератора `vh-seccomp` (python `struct`, это данные, а не
-   сборка): `socket` только AF_UNIX, `clone` без CLONE_NEW*, `clone3` → ENOSYS (флаги в
+4. **seccomp** — фильтр `vh-seccomp viewer` (тот же генератор, что у браузера,
+   [08](08-desktop.md#seccomp-фильтр-песочницы)): `socket` только AF_UNIX, `clone` без CLONE_NEW*, `clone3` → ENOSYS (флаги в
    структуре BPF не видит, glibc откатится на clone), `personality` только 0, запрещены
    unshare/setns, монтирование, io_uring, bpf, perf_event_open, userfaultfd, keyctl,
    kexec, modify_ldt, ptrace. Первыми — проверка архитектуры и бита x32; всё прочее —

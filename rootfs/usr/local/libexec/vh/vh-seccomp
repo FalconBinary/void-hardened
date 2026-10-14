@@ -1,0 +1,289 @@
+#!/usr/bin/python3 -I
+"""vh-seccomp — генератор фильтра seccomp-BPF для песочниц (docs/08, docs/13).
+
+Это данные, а не сборка из исходников: программа classic BPF собирается модулем
+struct и передаётся в bwrap --seccomp FD. Фильтр применяется после сборки песочницы,
+наследуется всеми потомками и не снимается.
+
+Порядок инструкций — ради кэша seccomp ядра: сначала архитектура и бит x32, затем
+вызовы с проверкой аргументов и запрещённые, всё прочее — безусловный ALLOW без
+чтения аргументов: такие вызовы ядро кэширует и BPF для них не запускает.
+Переходы задаются метками и считаются ассемблером; --selftest прогоняет оба фильтра
+через встроенный интерпретатор BPF на наборе вызовов с ожидаемым результатом.
+
+  vh-seccomp browser > filter.bpf   — песочница браузера (browser-sandbox)
+  vh-seccomp viewer  > filter.bpf   — просмотрщики (vh-open, optional/viewers)
+  vh-seccomp --selftest
+"""
+import struct
+import sys
+
+AUDIT_ARCH_X86_64 = 0xC000003E
+X32_BIT = 0x40000000
+RET_ALLOW = 0x7FFF0000
+RET_KILL = 0x80000000
+EPERM, ENOSYS, EAFNOSUPPORT = 1, 38, 97
+
+
+def errno(e):
+    return 0x00050000 | e
+
+
+# номера системных вызовов x86_64
+NR = dict(socket=41, socketpair=53, setsockopt=54, clone=56, clone3=435, unshare=272,
+          setns=308, personality=135, perf_event_open=298, bpf=321, userfaultfd=323,
+          add_key=248, request_key=249, keyctl=250, kexec_load=246, kexec_file_load=320,
+          io_uring_setup=425, io_uring_enter=426, io_uring_register=427, modify_ldt=154,
+          mount=165, umount2=166, pivot_root=155, fsopen=430, fsconfig=431, fsmount=432,
+          fspick=433, move_mount=429, open_tree=428, mount_setattr=442, ptrace=101,
+          process_vm_readv=310, process_vm_writev=311, init_module=175, finit_module=313,
+          delete_module=176, iopl=172, ioperm=173, open_by_handle_at=304, chroot=161,
+          acct=163, swapon=167, swapoff=168, syslog=103, vhangup=153, quotactl=179)
+CLONE_NEW_MASK = 0x7E020000        # NEWNS|NEWCGROUP|NEWUTS|NEWIPC|NEWUSER|NEWPID|NEWNET
+AF_UNIX, AF_INET, AF_INET6, AF_NETLINK = 1, 2, 10, 16
+IPPROTO_TCP, IPPROTO_UDP, NETLINK_ROUTE = 6, 17, 0
+SOL_SOCKET, SOL_TCP = 1, 6
+TCP_ULP = 31                       # kTLS и прочие ULP — поверхность ядра
+SO_ATTACH_FILTER, SO_ATTACH_BPF = 26, 50
+SO_ATTACH_REUSEPORT_CBPF, SO_ATTACH_REUSEPORT_EBPF = 51, 52   # cBPF/eBPF на сокете без привилегий
+
+DENY_COMMON = ["perf_event_open", "bpf", "userfaultfd", "add_key", "request_key", "keyctl",
+               "kexec_load", "kexec_file_load", "io_uring_setup", "io_uring_enter",
+               "io_uring_register", "modify_ldt", "mount", "umount2", "pivot_root", "fsopen",
+               "fsconfig", "fsmount", "fspick", "move_mount", "open_tree", "mount_setattr",
+               "ptrace", "process_vm_readv", "process_vm_writev", "init_module", "finit_module",
+               "delete_module", "iopl", "ioperm", "open_by_handle_at", "chroot", "acct",
+               "swapon", "swapoff", "syslog", "vhangup", "quotactl", "unshare", "setns"]
+
+LD, JEQ, JGE, JSET, RET = 0x20, 0x15, 0x35, 0x45, 0x06
+
+
+class Asm:
+    """Мини-ассемблер classic BPF: переходы — по меткам."""
+
+    def __init__(self):
+        self.code = []          # (op, jt, jf, k) — jt/jf: метка или None (= следующая)
+        self.labels = {}
+
+    def label(self, name):
+        self.labels[name] = len(self.code)
+
+    def ld_nr(self):
+        self.code.append((LD, None, None, 0))
+
+    def ld_arch(self):
+        self.code.append((LD, None, None, 4))
+
+    def ld_arg(self, i):
+        self.code.append((LD, None, None, 16 + 8 * i))   # младшие 32 бита args[i]
+
+    def jmp(self, op, k, jt=None, jf=None):
+        self.code.append((op, jt, jf, k))
+
+    def ret(self, k):
+        self.code.append((RET, None, None, k))
+
+    def assemble(self):
+        out = []
+        for i, (op, jt, jf, k) in enumerate(self.code):
+            def off(t):
+                if t is None:
+                    return 0
+                d = self.labels[t] - i - 1
+                if not 0 <= d <= 255:
+                    raise ValueError(f"переход {t} из {i}: {d}")
+                return d
+            out.append(struct.pack("<HBBI", op, off(jt), off(jf), k))
+        return b"".join(out)
+
+
+def header(a):
+    a.ld_arch()
+    a.jmp(JEQ, AUDIT_ARCH_X86_64, jf="kill")
+    a.ld_nr()
+    a.jmp(JGE, X32_BIT, jt="enosys")
+
+
+def tail(a, deny):
+    # clone: без флагов CLONE_NEW* (новые namespace)
+    a.jmp(JEQ, NR["clone"], jf="c3")
+    a.ld_arg(0)
+    a.jmp(JSET, CLONE_NEW_MASK, jt="eperm", jf="allow")
+    # clone3: флаги в структуре по указателю — BPF их не видит. ENOSYS: glibc откатится на clone
+    a.label("c3")
+    a.jmp(JEQ, NR["clone3"], jt="enosys")
+    # personality: только 0 и запрос текущего значения (READ_IMPLIES_EXEC, ADDR_NO_RANDOMIZE — нет)
+    a.jmp(JEQ, NR["personality"], jf="deny")
+    a.ld_arg(0)
+    a.jmp(JEQ, 0, jt="allow")
+    a.jmp(JEQ, 0xFFFFFFFF, jt="allow", jf="eperm")
+    a.label("deny")
+    for name in deny:
+        a.jmp(JEQ, NR[name], jt="eperm")
+    a.label("allow")
+    a.ret(RET_ALLOW)
+    a.label("eperm")
+    a.ret(errno(EPERM))
+    a.label("enosys")
+    a.ret(errno(ENOSYS))
+    a.label("eafnosupport")
+    a.ret(errno(EAFNOSUPPORT))
+    a.label("kill")
+    a.ret(RET_KILL)
+
+
+def socketpair_unix(a, nxt):
+    a.jmp(JEQ, NR["socketpair"], jf=nxt)
+    a.ld_arg(0)
+    a.jmp(JEQ, AF_UNIX, jt="allow", jf="eafnosupport")
+
+
+def viewer():
+    a = Asm()
+    header(a)
+    a.jmp(JEQ, NR["socket"], jf="sp")
+    a.ld_arg(0)
+    a.jmp(JEQ, AF_UNIX, jt="allow", jf="eafnosupport")
+    a.label("sp")
+    socketpair_unix(a, "t")
+    a.label("t")
+    tail(a, DENY_COMMON)
+    return a.assemble()
+
+
+def browser():
+    """AF_UNIX; AF_INET/INET6 только TCP и UDP (закрывает MPTCP, SCTP, UDP-Lite, сырые);
+    AF_NETLINK только NETLINK_ROUTE (без NETLINK_NETFILTER — nf_tables, класс
+    CVE-2024-1086); socketpair — AF_UNIX; setsockopt без TCP_ULP и BPF на сокете."""
+    a = Asm()
+    header(a)
+    a.jmp(JEQ, NR["socket"], jf="sp")
+    a.ld_arg(0)
+    a.jmp(JEQ, AF_UNIX, jt="allow")
+    a.jmp(JEQ, AF_INET, jt="inet")
+    a.jmp(JEQ, AF_INET6, jt="inet")
+    a.jmp(JEQ, AF_NETLINK, jt="nl", jf="eafnosupport")
+    a.label("inet")
+    a.ld_arg(2)
+    a.jmp(JEQ, 0, jt="allow")
+    a.jmp(JEQ, IPPROTO_TCP, jt="allow")
+    a.jmp(JEQ, IPPROTO_UDP, jt="allow", jf="eafnosupport")
+    a.label("nl")
+    a.ld_arg(2)
+    a.jmp(JEQ, NETLINK_ROUTE, jt="allow", jf="eafnosupport")
+    a.label("sp")
+    socketpair_unix(a, "so")
+    a.label("so")
+    a.jmp(JEQ, NR["setsockopt"], jf="t")
+    a.ld_arg(1)
+    a.jmp(JEQ, SOL_TCP, jf="sol")
+    a.ld_arg(2)
+    a.jmp(JEQ, TCP_ULP, jt="eperm", jf="allow")
+    a.label("sol")
+    a.jmp(JEQ, SOL_SOCKET, jf="allow")
+    a.ld_arg(2)
+    a.jmp(JEQ, SO_ATTACH_FILTER, jt="eperm")
+    a.jmp(JEQ, SO_ATTACH_BPF, jt="eperm")
+    a.jmp(JEQ, SO_ATTACH_REUSEPORT_CBPF, jt="eperm")
+    a.jmp(JEQ, SO_ATTACH_REUSEPORT_EBPF, jt="eperm", jf="allow")
+    a.label("t")
+    # ptrace Firefox нужен для своих процессов (профилировщик, отчёты о зависаниях)
+    tail(a, [d for d in DENY_COMMON if d != "ptrace"])
+    return a.assemble()
+
+
+def run_bpf(prog, nr, args=(0,) * 6, arch=AUDIT_ARCH_X86_64):
+    """Интерпретатор classic BPF для проверки фильтра (только используемые инструкции)."""
+    data = struct.pack("<iIQ6Q", nr, arch, 0, *[x & 0xFFFFFFFFFFFFFFFF for x in args])
+    ins = [struct.unpack_from("<HBBI", prog, i) for i in range(0, len(prog), 8)]
+    pc, acc = 0, 0
+    while True:
+        op, jt, jf, k = ins[pc]
+        if op == LD:
+            (acc,) = struct.unpack_from("<I", data, k)
+            pc += 1
+        elif op == RET:
+            return k
+        else:
+            cond = {JEQ: acc == k, JGE: acc >= k, JSET: bool(acc & k)}[op]
+            pc += 1 + (jt if cond else jf)
+
+
+def selftest():
+    A, P, N, F = RET_ALLOW, errno(EPERM), errno(ENOSYS), errno(EAFNOSUPPORT)
+    cases = {
+        "browser": [
+            ("socket(AF_UNIX)", NR["socket"], (AF_UNIX, 1, 0), A),
+            ("socket(AF_INET, TCP)", NR["socket"], (AF_INET, 1, IPPROTO_TCP), A),
+            ("socket(AF_INET, 0)", NR["socket"], (AF_INET, 2, 0), A),
+            ("socket(AF_INET6, UDP)", NR["socket"], (AF_INET6, 2, IPPROTO_UDP), A),
+            ("socket(AF_INET, MPTCP)", NR["socket"], (AF_INET, 1, 262), F),
+            ("socket(AF_INET, SCTP)", NR["socket"], (AF_INET, 1, 132), F),
+            ("socket(AF_NETLINK, ROUTE)", NR["socket"], (AF_NETLINK, 3, NETLINK_ROUTE), A),
+            ("socket(AF_NETLINK, NETFILTER)", NR["socket"], (AF_NETLINK, 3, 12), F),
+            ("socket(AF_PACKET)", NR["socket"], (17, 3, 0), F),
+            ("socket(AF_ALG)", NR["socket"], (38, 5, 0), F),
+            ("socketpair(AF_UNIX)", NR["socketpair"], (AF_UNIX, 1, 0), A),
+            ("socketpair(AF_INET)", NR["socketpair"], (AF_INET, 1, 0), F),
+            ("setsockopt(SOL_TCP, TCP_NODELAY)", NR["setsockopt"], (3, SOL_TCP, 1), A),
+            ("setsockopt(SOL_TCP, TCP_ULP)", NR["setsockopt"], (3, SOL_TCP, TCP_ULP), P),
+            ("setsockopt(SOL_SOCKET, SO_RCVBUF)", NR["setsockopt"], (3, SOL_SOCKET, 8), A),
+            ("setsockopt(SO_ATTACH_FILTER)", NR["setsockopt"], (3, SOL_SOCKET, 26), P),
+            ("setsockopt(SO_ATTACH_BPF)", NR["setsockopt"], (3, SOL_SOCKET, 50), P),
+            ("setsockopt(SO_ATTACH_REUSEPORT_CBPF)", NR["setsockopt"], (3, SOL_SOCKET, 51), P),
+            ("setsockopt(SO_ATTACH_REUSEPORT_EBPF)", NR["setsockopt"], (3, SOL_SOCKET, 52), P),
+            ("setsockopt(SO_DETACH_REUSEPORT_BPF 68)", NR["setsockopt"], (3, SOL_SOCKET, 68), A),
+            ("setsockopt(IPPROTO_IP)", NR["setsockopt"], (3, 0, 1), A),
+            ("clone(обычный поток)", NR["clone"], (0x3D0F00,), A),
+            ("clone(CLONE_NEWUSER)", NR["clone"], (0x10000000 | 17,), P),
+            ("clone3", NR["clone3"], (), N),
+            ("personality(0)", NR["personality"], (0,), A),
+            ("personality(запрос)", NR["personality"], (0xFFFFFFFF,), A),
+            ("personality(READ_IMPLIES_EXEC)", NR["personality"], (0x0400000,), P),
+            ("ptrace", NR["ptrace"], (), A),
+            ("mount", NR["mount"], (), P), ("unshare", NR["unshare"], (), P),
+            ("keyctl", NR["keyctl"], (), P), ("bpf", NR["bpf"], (), P),
+            ("io_uring_setup", NR["io_uring_setup"], (), P),
+            ("perf_event_open", NR["perf_event_open"], (), P),
+            ("read", 0, (), A), ("mmap", 9, (), A), ("x32 read", X32_BIT | 0, (), N),
+        ],
+        "viewer": [
+            ("socket(AF_UNIX)", NR["socket"], (AF_UNIX, 1, 0), A),
+            ("socket(AF_INET)", NR["socket"], (AF_INET, 1, 6), F),
+            ("socketpair(AF_UNIX)", NR["socketpair"], (AF_UNIX, 1, 0), A),
+            ("clone(CLONE_NEWNET)", NR["clone"], (0x40000000 | 17,), P),
+            ("clone3", NR["clone3"], (), N),
+            ("ptrace", NR["ptrace"], (), P), ("setns", NR["setns"], (), P),
+            ("personality(ADDR_NO_RANDOMIZE)", NR["personality"], (0x0040000,), P),
+            ("write", 1, (), A),
+        ],
+    }
+    bad = 0
+    for kind, gen in (("browser", browser), ("viewer", viewer)):
+        prog = gen()
+        if run_bpf(prog, 0, arch=0x40000003) != RET_KILL:      # i386
+            print(f"FAIL {kind}: чужая архитектура не убивается")
+            bad += 1
+        for name, nr, args, want in cases[kind]:
+            got = run_bpf(prog, nr, tuple(args) + (0,) * (6 - len(args)))
+            if got != want:
+                print(f"FAIL {kind}: {name}: {got:#x}, ожидалось {want:#x}")
+                bad += 1
+        print(f"{kind}: {len(prog) // 8} инструкций, {len(cases[kind]) + 1} проверок")
+    print("selftest: " + ("OK" if not bad else f"ошибок {bad}"))
+    return bad
+
+
+def main():
+    kind = sys.argv[1] if len(sys.argv) > 1 else ""
+    if kind == "--selftest":
+        sys.exit(1 if selftest() else 0)
+    gen = {"viewer": viewer, "browser": browser}.get(kind)
+    if not gen:
+        print(__doc__, file=sys.stderr)
+        sys.exit(2)
+    sys.stdout.buffer.write(gen())
+
+
+if __name__ == "__main__":
+    main()

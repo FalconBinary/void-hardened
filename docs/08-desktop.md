@@ -167,7 +167,32 @@ Super+B → vh-browse → doas /usr/local/sbin/vh-browser trusted      (прав
 `--disable-userns --assert-userns-disabled` (внутри песочницы новые user namespace
 создать нельзя — весь класс эксплойтов ядра «из своего userns»: nf_tables, overlayfs,
 FUSE — закрыт), `--cap-drop ALL`, `--clearenv`, `--new-session` (нет TIOCSTI в чужой
-терминал), `--die-with-parent`.
+терминал), `--die-with-parent`, `--seccomp 3`.
+
+### seccomp-фильтр песочницы
+
+`browser-sandbox` генерирует фильтр (`/usr/local/libexec/vh/vh-seccomp browser` — python
+`struct`, это данные, а не сборка) и передаёт его bwrap дескриптором 3. bwrap применяет
+его **после** сборки песочницы, его наследуют все процессы Firefox — поверх их
+собственного фильтра контент-процессов, который не покрывает главный процесс.
+
+| Вызов | Разрешено | Что закрывает |
+|---|---|---|
+| `socket` | AF_UNIX; AF_INET/AF_INET6 только TCP и UDP; AF_NETLINK только NETLINK_ROUTE | MPTCP, SCTP, UDP-Lite, сырые сокеты, AF_ALG, AF_PACKET, NETLINK_NETFILTER (nf_tables) |
+| `socketpair` | AF_UNIX | — |
+| `setsockopt` | всё, кроме `TCP_ULP` и `SO_ATTACH_*` (BPF на сокете) | kTLS/ULP и cBPF — поверхность ядра без привилегий |
+| `clone` | без флагов `CLONE_NEW*` | новые namespace |
+| `clone3` | → ENOSYS | флаги лежат в структуре по указателю — BPF их не видит; glibc откатывается на `clone` |
+| `personality` | 0 и запрос | `READ_IMPLIES_EXEC`, `ADDR_NO_RANDOMIZE` |
+| монтирование, `unshare`, `setns`, `bpf`, `perf_event_open`, `userfaultfd`, `keyctl`, `io_uring_*`, `kexec_*`, `modify_ldt`… | запрещены | классы LPE из песочницы |
+
+Порядок инструкций выбран ради **кэша seccomp ядра**: архитектура и бит x32 — первыми,
+затем вызовы с проверкой аргументов и запрещённые; всё прочее — безусловный ALLOW без
+чтения аргументов. Для таких вызовов (read, write, mmap… — подавляющее большинство) ядро
+запоминает решение и BPF не запускает: цена фильтра почти нулевая. Переходы в программе
+считает мини-ассемблер с метками, а `vh-seccomp --selftest` прогоняет оба фильтра через
+встроенный интерпретатор BPF на 48 вызовах с ожидаемым результатом (`vh-audit` делает
+это при каждой проверке).
 
 > Firefox умеет работать без user namespace: его собственная песочница контента
 > (seccomp-bpf + брокер файлов) работает, теряется только его chroot/pid/net-слой —

@@ -15,7 +15,7 @@ depends() {
 
 install() {
 	inst_libdir_file 'libtss2-tcti-device.so*'
-	inst_multiple tpm2-totp tpm2_pcrextend tpm2_pcrread date od head tr
+	inst_multiple tpm2-totp tpm2_pcrextend tpm2_pcrread date od head tr stty
 	inst /usr/libexec/tpm2-totp/show-tpm2-totp /bin/show-tpm2-totp
 	inst_simple "$moddir/vh-totp-start.sh" /bin/vh-totp-start
 	inst_simple /etc/vh/totp.conf /etc/vh/totp.conf

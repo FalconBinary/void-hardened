@@ -50,6 +50,8 @@ fi
 for m in fuse overlay; do
 	grep -q "^$m " /proc/modules && bad "загружен модуль $m" || ok "модуль $m не загружен"
 done
+python3 -I /usr/local/libexec/vh/vh-seccomp --selftest >/dev/null 2>&1 \
+	&& ok "фильтры seccomp песочниц: самопроверка" || bad "vh-seccomp --selftest не прошёл"
 grep -q . /sys/kernel/security/apparmor/profiles 2>/dev/null && \
 	ok "профили AppArmor: $(wc -l < /sys/kernel/security/apparmor/profiles)" || unk "профилей AppArmor нет"
 
