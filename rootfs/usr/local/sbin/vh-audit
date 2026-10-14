@@ -26,6 +26,22 @@ case ",$lsm," in *,apparmor,*) ok "AppArmor активен" ;; *) bad "AppArmor 
 chk kernel.panic "$(cat /proc/sys/kernel/panic)" 10
 sb=$(od -An -t u1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-* 2>/dev/null | tr -d ' ')
 [ "$sb" = 1 ] && ok "Secure Boot включён" || bad "Secure Boot выключен (этап 2: 20-firstboot.sh)"
+# подписи всех EFI-файлов на ESP (ESP — noauto: монтируется только на чтение и на время)
+esp=0
+mountpoint -q /boot/efi || { mount -o ro /boot/efi 2>/dev/null && esp=1; }
+if mountpoint -q /boot/efi; then
+	if [ -e /var/lib/sbctl/keys/db/db.key ] || mountpoint -q /var/lib/sbctl/keys; then
+		unsigned=$(sbctl verify 2>&1 | grep -i 'not signed' || true)
+		[ -z "$unsigned" ] && ok "все EFI-файлы на ESP подписаны (sbctl verify)" || bad "неподписанные: $unsigned"
+	else
+		unk "ключи Secure Boot офлайн — sbctl verify без носителя пропущен"
+	fi
+	n=$(ls /boot/efi/EFI/void/linux-*.efi 2>/dev/null | wc -l)
+	[ "$n" -ge 1 ] && [ "$n" -le 3 ] && ok "UKI на ESP: $n" || bad "UKI на ESP: $n (ожидалось 1–3)"
+	[ "$esp" = 1 ] && umount /boot/efi
+else
+	unk "ESP не смонтировался — подписи не проверены"
+fi
 if [ -e /etc/vh/modlock.enabled ]; then
 	chk kernel.modules_disabled "$(cat /proc/sys/kernel/modules_disabled)" 1
 else

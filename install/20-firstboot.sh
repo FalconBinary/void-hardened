@@ -32,7 +32,13 @@ chronyc -n tracking 2>/dev/null | grep -q 'Leap status *: Normal' && ok "вре�
 say "Secure Boot: SecureBoot=$SB SetupMode=$SETUP"
 if [ "$SB" = 1 ]; then
 	sbctl status
-	sbctl verify || die "есть неподписанные EFI-файлы"
+	# ESP в fstab — noauto: для проверки подписей монтируется только на чтение и на время
+	esp=0
+	mountpoint -q /boot/efi || { mount -o ro /boot/efi && esp=1; }
+	vrc=0
+	sbctl verify || vrc=1
+	[ "$esp" = 1 ] && umount /boot/efi
+	[ "$vrc" = 0 ] || die "есть неподписанные EFI-файлы"
 	ok "Secure Boot включён, подписи на месте. Дальше: этап 3 — doas /root/vh/install/30-lock.sh"
 	exit 0
 fi

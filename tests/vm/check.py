@@ -5,6 +5,9 @@
   check.py enroll     — регистрация своих ключей (20-firstboot.sh в Setup Mode)
   check.py sb         — загрузка с включённым Secure Boot: подписи, cmdline только из UKI
   check.py lock       — этап 3 (30-lock.sh) и проверка modules_disabled после перезагрузки
+  check.py desktop    — mango без экрана, фильтр Wayland, браузер в песочнице под AppArmor
+  check.py strictnet  — optional/strict-net: сеть людей, временные разрешения
+  check.py deadman    — optional/deadman: дамп RAM после выключения без модуля и с ним
   check.py all        — всё по порядку
 
 Каждый шаг — отдельная загрузка VM. Итог: строки «PASS/FAIL …» в конце вывода.
@@ -27,29 +30,49 @@ def check(name, ok, detail=""):
 
 
 def run(ser, cmd, timeout=900):
-    """Выполнить команду, вернуть (код, вывод)."""
+    """Выполнить команду в root-шелле (doas -s), вернуть (код, вывод). «doas » в командах
+    убирается: шелл уже root, а повторные запросы пароля по последовательной консоли
+    теряют символы."""
+    cmd = re.sub(r"\bdoas\s+", "", cmd)
     ser.log.write(f"\n### {cmd}\n")
     start = len(ser.alltext)
-    rc = ser.sh(cmd, timeout=timeout, check=False, password=vhvm.USER_PASS)
+    rc = ser.sh(cmd, timeout=timeout, check=False)
     out = ser.alltext[start:]
     return rc, out
 
 
-def boot(a, extra_cmdline=None):
+def as_user(user, cmd):
+    """Команда от имени пользователя (из root-шелла): его UID, GID и группы."""
+    return f"setpriv --reuid={user} --regid={user} --init-groups sh -c {shq(cmd)}"
+
+
+def shq(s):
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def root_shell(ser):
+    ser.send("doas -s")
+    ser.expect(r"doas \([^)]*\) password: ?", 60)
+    time.sleep(1)
+    ser.send(vhvm.USER_PASS)
+    time.sleep(2)
+    ser.send("export PS1='vh# ' TERM=dumb; stty -echo cols 250")
+    ser.expect(r"vh# ", 60)
+
+
+def boot(a, extra=None):
     vm = vhvm.VM(a.dir, a.mem, a.smp)
-    a.repo = False
-    ser = vhvm.boot_and_login(a, vm)
+    ser = vm.start(extra or [])
+    ser.expect(r"[Pp]assword|[Pp]assphrase", 1800)
+    time.sleep(2)
+    ser.send(vhvm.LUKS_PASS)
+    vhvm.login(ser, "admin", vhvm.USER_PASS)
+    root_shell(ser)
     return vm, ser
 
 
 def shutdown(vm, ser):
-    ser.send("doas poweroff")
-    try:
-        ser.expect(r"doas \([^)]*\) password: ?", 30)
-        time.sleep(0.5)
-        ser.send(vhvm.USER_PASS)
-    except (TimeoutError, EOFError):
-        pass
+    ser.send("poweroff")
     vm.stop()
 
 
@@ -81,8 +104,8 @@ def step_base(a):
         print(out)
         rc, out = run(ser, "doas nft list ruleset | grep -c . ; doas nft list set inet vh people_tmp")
         check("nftables: таблица и set'ы строгого режима", rc == 0)
-        rc, out = run(ser, "id user; id admin; ls -ld /home/xfer /home/user")
-        check("группы: user не в wheel/input/video", "wheel" not in out.split("id admin")[0] if "id admin" in out else True)
+        rc, out = run(ser, "id -nG user")
+        check("группы: user не в wheel/input/video", not re.search(r"\b(wheel|input|video)\b", out.split("\n", 1)[-1]))
         rc, out = run(ser, "doas sh -c 'grep -c . /sys/kernel/security/apparmor/profiles; cat /sys/kernel/security/apparmor/profiles'")
         check("профили AppArmor загружены", "vh.firefox" in out and "vh.unbound" in out)
         rc, out = run(ser, "doas sh -c 'grep -ah vh-acpid /var/log/socklog/*/current | tail -3'")
@@ -103,9 +126,12 @@ def step_enroll(a):
 def step_sb(a):
     vm, ser = boot(a)
     try:
-        rc, out = run(ser, "doas sbctl status; doas sbctl verify")
+        rc, out = run(ser, "doas sbctl status")
         check("Secure Boot включён", re.search(r"Secure Boot:\s+.*Enabled", out) is not None, "")
-        check("sbctl verify: всё подписано", "is not signed" not in out)
+        rc, out = run(ser, "doas mount -o ro /boot/efi && doas sbctl verify; r=$?; doas umount /boot/efi; test $r = 0")
+        check("sbctl verify: всё подписано", rc == 0 and "not signed" not in out)
+        rc, out = run(ser, "cat /proc/cmdline")
+        check("cmdline под Secure Boot — только из UKI", "lockdown=confidentiality" in out)
         rc, out = run(ser, "doas /root/vh/install/20-firstboot.sh")
         check("20-firstboot: проверка подписей", rc == 0)
     finally:
@@ -131,16 +157,148 @@ def step_lock(a):
         shutdown(vm, ser)
 
 
+def step_desktop(a):
+    """mango без экрана (headless backend) → vh-wlfilter → vh-browse → doas → bwrap → Firefox."""
+    vm, ser = boot(a)
+    U = "setpriv --reuid=user --regid=user --init-groups env -i HOME=/home/user " \
+        "XDG_RUNTIME_DIR=/run/user/$(id -u user) PATH=/usr/local/bin:/usr/bin LANG=C.UTF-8"
+    try:
+        # тестовый стенд: доступ к card0 вместо seatd (scenefx нужен EGL; в VM — kms_swrast)
+        run(ser, "install -d -m 0700 -o user -g user /run/user/$(id -u user); setfacl -m u:user:rw /dev/dri/card0")
+        rc, out = run(ser, f"{U} WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 "
+                           "sh -c 'mango >/tmp/vh-mango.log 2>&1 &'; sleep 25; doas ls -l /run/vh-sandbox; "
+                           "pgrep -u user -l . | sort -k2 | uniq -f1")
+        check("mango (headless) запустился, vh-wlfilter создал сокет", "wayland" in out and "mango" in out)
+        check("netline запущен", "netline" in out)
+        rc, out = run(ser, f"{U} WAYLAND_DISPLAY=wayland-0 sh -c 'vh-browse untrusted >/tmp/vh-ff.log 2>&1 &'; "
+                           "sleep 90; pgrep -u browser -l firefox | head; "
+                           "for p in $(pgrep -u browser firefox | head -3); do doas cat /proc/$p/attr/current; echo; "
+                           "doas grep -E 'Seccomp:|NoNewPrivs|CapEff' /proc/$p/status; done", timeout=600)
+        check("Firefox работает от пользователя browser", "firefox" in out)
+        check("Firefox под профилем vh.firefox (enforce)", "vh.firefox (enforce)" in out)
+        check("Firefox: no_new_privs, без capability", "NoNewPrivs:\t1" in out and "CapEff:\t0000000000000000" in out)
+        rc, out = run(ser, "doas sh -c 'cat /tmp/vh-ff.log; grep -a vh-wlfilter /tmp/vh-mango.log | tail -5'")
+        check("vh-wlfilter без ошибок протокола", "клиент отключён" not in out, out[-400:].replace("\n", " | "))
+        rc, out = run(ser, "doas sh -c 'grep -ah DENIED /var/log/socklog/kernel/current | grep -v chronyd | tail -15'")
+        print(out)
+        rc, out = run(ser, "p=$(pgrep -u browser firefox | head -1); doas ls /proc/$p/root/home/browser /proc/$p/root/ 2>&1; "
+                           "doas cat /proc/$p/root/proc/interrupts | wc -c; doas cat /proc/$p/mountinfo | grep -E ' /tmp | /dev/shm ' ")
+        check("песочница: /proc/interrupts пуст, /tmp noexec", " 0\n" in out.replace("\r", "") and "noexec" in out)
+        run(ser, "doas pkill -u browser; doas pkill -u user; true")
+    finally:
+        shutdown(vm, ser)
+
+
+def step_strictnet(a):
+    """optional/strict-net: у людей нет сети и DNS, временные разрешения по таймауту."""
+    vm, ser = boot(a)
+    try:
+        rc, out = run(ser, "doas /root/vh/optional/strict-net/enable")
+        check("strict-net: включён", rc == 0, out[-200:].replace("\n", " "))
+        rc, _ = run(ser, as_user("admin", "getent hosts voidlinux.org"))
+        check("strict-net: у админа нет DNS", rc != 0)
+        rc, _ = run(ser, "getent hosts voidlinux.org")
+        check("strict-net: у root нет DNS без vh-net", rc != 0)
+        rc, _ = run(ser, as_user("browser", "getent hosts voidlinux.org"))
+        check("strict-net: браузеру DNS можно", rc == 0)
+        rc, _ = run(ser, "vh-net allow admin 2 && " + as_user("admin", "getent hosts voidlinux.org"))
+        check("strict-net: vh-net allow даёт сеть на время", rc == 0)
+        rc, _ = run(ser, "vh-net revoke admin; " + as_user("admin", "getent hosts voidlinux.org"))
+        check("strict-net: revoke отзывает", rc != 0)
+        rc, out = run(ser, "doas vh-net xbps 5 && doas xbps-install -Sn 2>&1 | tail -2", timeout=300)
+        check("strict-net: vh-net xbps открывает зеркала root", rc == 0)
+        rc, out = run(ser, "doas vh-net status")
+        print(out)
+        rc, _ = run(ser, "/root/vh/optional/strict-net/disable && " + as_user("admin", "getent hosts voidlinux.org"))
+        check("strict-net: disable возвращает базовый слой", rc == 0)
+    finally:
+        shutdown(vm, ser)
+
+
+def find_in_dump(path, needles):
+    """Поиск байтовых строк в дампе памяти VM (mmap, без загрузки в RAM)."""
+    import mmap
+    found = {}
+    with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+        for name, n in needles.items():
+            found[name] = m.find(n) >= 0
+    return found
+
+
+def dump_after_poweroff(a, tag, prepare_cmds):
+    """Загрузить, выполнить команды, выключить; VM вместо перезагрузки/выключения
+    встаёт на паузу — снять дамп RAM и искать ключ тома и маркеры."""
+    vm, ser = boot(a, ["-action", "reboot=shutdown", "-action", "shutdown=pause"])
+    try:
+        rc, out = run(ser, "printf '%s' 'vh-test-luks' | doas cryptsetup luksDump --dump-volume-key --batch-mode "
+                           "--key-file - /dev/nvme0n1p2 | sed -n 's/^MK dump:\\s*//p;/^\\s\\+[0-9a-f][0-9a-f] /p'")
+        hexkey = "".join(re.findall(r"\b[0-9a-f]{2}\b", out.split("### ")[-1]))
+        key = bytes.fromhex(hexkey[:128]) if len(hexkey) >= 128 else b""
+        for c in prepare_cmds:
+            run(ser, as_user("admin", c))
+        ser.send("poweroff")
+        # ждём паузы VM (выключение или перезагрузка → pause), затем дамп
+        dump = os.path.join(vm.d, f"mem-{tag}.elf")
+        if os.path.exists(dump):
+            os.remove(dump)
+        time.sleep(60)
+        vm.monitor(f"dump-guest-memory -d {dump}")
+        last = -1
+        for _ in range(300):
+            time.sleep(2)
+            sz = os.path.getsize(dump) if os.path.exists(dump) else 0
+            if sz > 0 and sz == last:
+                break
+            last = sz
+        res = find_in_dump(dump, {
+            "ключ тома (первые 32 байта)": key[:32] if key else b"\x00NOKEY\x00",
+            "маркер прочитанного файла": b"VHMARK_READ_7f3a",
+            "маркер памяти процесса": b"VHMARK_PROC_91c2",
+            "маркер записанного файла": b"VHMARK_DIRTY_c40e",
+        })
+        os.remove(dump)
+        return bool(key), res
+    finally:
+        vm.monitor("quit")
+        vm.stop()
+
+
+MARKERS = [
+    "printf 'VHMARK_READ_7f3a%.0s' $(seq 1 2000) > /home/admin/read.txt; sync; cat /home/admin/read.txt >/dev/null",
+    "( python3 -c 'import time; s=\"VHMARK_PROC_91c2\"*4000; time.sleep(9999)' & )",
+    "printf 'VHMARK_DIRTY_c40e%.0s' $(seq 1 2000) > /home/admin/dirty.txt",
+]
+
+
+def step_deadman(a):
+    """optional/deadman: дамп RAM после штатного выключения — без модуля и с ним."""
+    ok_key, base = dump_after_poweroff(a, "base", MARKERS)
+    check("стенд: ключ тома получен для поиска", ok_key)
+    print("без deadman:", base)
+    check("без deadman ключ ЕСТЬ в RAM после выключения (метод поиска работает)", base["ключ тома (первые 32 байта)"])
+    vm, ser = boot(a)
+    try:
+        rc, out = run(ser, "printf 'нет\\nn\\n' | doas /root/vh/optional/deadman/enable", timeout=1800)
+        check("deadman: включён", rc == 0, out[-300:].replace("\n", " "))
+    finally:
+        shutdown(vm, ser)
+    ok_key, res = dump_after_poweroff(a, "deadman", MARKERS)
+    print("с deadman:", res)
+    for name, present in res.items():
+        check(f"deadman: после выключения в RAM нет: {name}", not present)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["base", "enroll", "sb", "lock", "all"])
+    ap.add_argument("step", choices=["base", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "all"])
     ap.add_argument("--dir", default=os.path.join(vhvm.REPO, "tests", "vm", "work"))
     ap.add_argument("--mem", type=int, default=3072)
     ap.add_argument("--smp", type=int, default=4)
     ap.add_argument("--user", default="admin")
     a = ap.parse_args()
     steps = {"base": [step_base], "enroll": [step_enroll], "sb": [step_sb], "lock": [step_lock],
-             "all": [step_base, step_enroll, step_sb, step_lock]}[a.step]
+             "desktop": [step_desktop], "strictnet": [step_strictnet], "deadman": [step_deadman],
+             "all": [step_base, step_enroll, step_sb, step_lock, step_desktop]}[a.step]
     for s in steps:
         s(a)
     print("\n==== ИТОГ")
