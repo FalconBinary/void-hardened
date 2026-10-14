@@ -15,8 +15,9 @@ profile vh.firefox /usr/lib/firefox/firefox flags=(attach_disconnected) {
   /usr/lib/** mr,
   /usr/lib/firefox/** mrix,
   /home/*/ rw,
-  /home/*/** rwk,
-  /tmp/** rwk,
+  # l: fontconfig и профиль Firefox создают файлы блокировки через link() (найдено на стенде)
+  /home/*/** rwkl,
+  /tmp/** rwkl,
   /dev/shm/** rwk,
   /run/user/*/** rwk,
   /dev/dri/* rw,
