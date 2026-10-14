@@ -113,9 +113,24 @@ iwd с WPA3/PMF/случайным MAC; `kill -KILL -1` после сеанса;
 - SUID/SGID у `wall`, `write`, `dbus-daemon-launch-helper`, `xbps-uchroot`, `utempter`
   (см. п. 9) — в `noextract`;
 - unbound отдавал записи AAAA при выключенном IPv6 — теперь `private-address: ::/0`
-  (при `VH_IPV6=no`).
+  (при `VH_IPV6=no`);
+- `sbctl verify` без смонтированного ESP («failed to find EFI system partition»):
+  ESP в fstab — `noauto`, `20-firstboot.sh` и `vh-audit` монтируют его на чтение и на
+  время проверки;
+- браузер не подключался к Wayland: сокет фильтра создаётся от пользователя и получал
+  его группу, а браузер — другой UID. Каталог `/run/vh-sandbox` теперь setgid
+  (`2750 user:browser`) — сокеты наследуют группу браузера;
+- профиль `vh.firefox` не давал fontconfig создавать файлы блокировки (`link`).
 
-Что подтвердил стенд: загрузка Limine → UKI → LUKS2 → runit; cmdline только из UKI;
+Промпт требовал seccomp-фильтр на bwrap браузера — в прошлой версии его не было.
+Добавлен: `vh-seccomp browser` (генератор с метками и самопроверкой на 48 вызовах);
+на стенде Firefox работает под ним (`Seccomp: 2`), профилем `vh.firefox (enforce)`,
+без capability и с `no_new_privs`.
+
+Что подтвердил стенд: загрузка Limine → UKI → LUKS2 → runit; регистрация своих ключей
+Secure Boot с хэшем Option ROM из журнала TPM (iPXE сетевой карты) вместо сертификатов
+Microsoft и загрузка с включённым Secure Boot; `modules_disabled=1` к стадии 2 (после
+него даже CD с ISO9660 не смонтировать — модуль не загрузится); cmdline только из UKI;
 lockdown=confidentiality; LSM `lockdown,capability,landlock,yama,apparmor`; DoT через
 unbound; DNSSEC отвергает `dnssec-failed.org`; защита от DNS rebinding
 (`192.168.1.1.nip.io` не резолвится); chrony — 4 источника по NTS; `xbps-pkgdb -a`

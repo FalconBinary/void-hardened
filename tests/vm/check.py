@@ -43,6 +43,15 @@ def run(ser, cmd, timeout=900):
     return rc, out
 
 
+def pf(text):
+    """printf '…' только из ASCII: не-ASCII байты — восьмеричными escape. По
+    последовательной консоли в шелле без локали readline принимает байты UTF-8
+    за Meta-клавиши и «съедает» строку."""
+    out = "".join(c if c.isascii() and c.isprintable() and c not in "'\\%" else
+                  "".join(f"\\{b:03o}" for b in c.encode()) for c in text)
+    return f"printf '{out}'"
+
+
 def as_user(user, cmd):
     """Команда от имени пользователя (из root-шелла): его UID, GID и группы."""
     return f"setpriv --reuid={user} --regid={user} --init-groups sh -c {shq(cmd)}"
@@ -306,7 +315,7 @@ def step_deadman(a):
     check("без deadman ключ ЕСТЬ в RAM после выключения (метод поиска работает)", base["ключ тома (первые 32 байта)"])
     vm, ser = boot(a)
     try:
-        rc, out = run(ser, "printf 'нет\\nn\\n' | doas /root/vh/optional/deadman/enable", timeout=1800)
+        rc, out = run(ser, pf("нет\nn\n") + " | /root/vh/optional/deadman/enable", timeout=1800)
         check("deadman: включён", rc == 0, out[-300:].replace("\n", " "))
     finally:
         shutdown(vm, ser)
@@ -323,7 +332,7 @@ def step_totp(a):
     """optional/tpm2-totp на swtpm: генерация в initramfs, код до пароля LUKS, PCR 14."""
     vm, ser = boot(a)
     try:
-        rc, out = run(ser, "printf 'записал\\n' | /root/vh/optional/tpm2-totp/enable", timeout=2400)
+        rc, out = run(ser, pf("записал\n") + " | /root/vh/optional/tpm2-totp/enable", timeout=2400)
         check("tpm2-totp: включён (lockout, модуль dracut, UKI)", rc == 0, out[-300:].replace("\n", " "))
     finally:
         shutdown(vm, ser)
@@ -373,15 +382,21 @@ def step_modules(a):
     """Быстрые проверки модулей: dns-pin, viewers, home-lockdown, session-apparmor."""
     vm, ser = boot(a)
     try:
+        # имена DoT-серверов в unbound.conf — как после установки (на случай прошлых прогонов)
+        run(ser, "sed -i -e 's/^\\(\\s*forward-addr: 9.9.9.9@853#\\).*/\\1dns.quad9.net/' "
+                 "-e 's/^\\(\\s*forward-addr: 149.112.112.112@853#\\).*/\\1dns.quad9.net/' "
+                 "-e 's/^\\(\\s*forward-addr: 194.242.2.2@853#\\).*/\\1dns.mullvad.net/' /etc/unbound/unbound.conf; "
+                 "sv restart unbound; sleep 3; grep forward-addr /etc/unbound/unbound.conf")
         rc, out = run(ser, "printf 'pin\\n' | /root/vh/optional/dns-pin/enable", timeout=600)
         check("dns-pin: пин записан, DNS работает", rc == 0 and "работает" in out, out[-300:].replace("\n", " "))
         rc, out = run(ser, "grep -c BEGIN /etc/unbound/ca-pin.pem /etc/chrony/nts-pin.pem")
         print(out)
-        rc, out = run(ser, "sed -i 's/@853#dns.quad9.net/@853#example.com/' /etc/unbound/unbound.conf; "
-                           "sed -i 's/@853#dns.mullvad.net/@853#example.com/' /etc/unbound/unbound.conf; "
+        rc, out = run(ser, "cp -a /etc/unbound/unbound.conf /root/unbound.conf.test; "
+                           "sed -i 's/@853#[a-z.]*/@853#example.com/' /etc/unbound/unbound.conf; "
                            "sv restart unbound; sleep 3; getent hosts kernel.org")
         check("dns-pin: чужое имя в forward-addr ломает резолв (отказ закрытый)", rc != 0)
-        run(ser, "/root/vh/optional/dns-pin/disable; sed -i 's/@853#example.com/@853#dns.quad9.net/' /etc/unbound/unbound.conf; true")
+        run(ser, "cp -a /root/unbound.conf.test /etc/unbound/unbound.conf; /root/vh/optional/dns-pin/disable; "
+                 "sleep 3; getent hosts voidlinux.org")
         rc, out = run(ser, "/root/vh/optional/viewers/enable", timeout=1200)
         check("viewers: включён", rc == 0, out[-200:].replace("\n", " "))
         rc, out = run(ser, as_user("user", "printf 'VH-OPEN-OK\\n' > /home/xfer/t.txt; vh-open /home/xfer/t.txt < /dev/null"))
