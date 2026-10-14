@@ -112,7 +112,9 @@ install/        00-probe.sh (проба) · 10-install.sh (установка) �
 rootfs/         файлы, которые ложатся в систему (*.in — шаблоны с @VH_*@ из vh.conf)
 optional/       параноидальные модули: <модуль>/enable, disable; status
 tools/          vh-bench (сравнение скорости), vh-hashpw (только для тестов)
-tests/vm/       стенд qemu + OVMF (Secure Boot) + swtpm: автоматическая установка и проверка
+tests/vm/       стенд qemu + OVMF (Secure Boot) + swtpm: vhvm.py — установка без участия
+                человека, check.py — проверки (base, enroll, sb, lock, desktop, strictnet,
+                deadman, totp, modules)
 docs/           руководство
 vh.conf.example все настройки установщика с объяснениями
 ```

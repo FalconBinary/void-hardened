@@ -268,8 +268,10 @@ TPM (swtpm). В репозитории это `tests/vm/vhvm.py`:
 
 ```sh
 # Linux: пакеты qemu, edk2-ovmf (или ovmf), swtpm, xorriso. macOS: brew install qemu swtpm
-python3 tests/vm/vhvm.py install --iso void-live-x86_64-20250202-base.iso
-python3 tests/vm/vhvm.py boot --run 'doas vh-audit'
+python3 tests/vm/vhvm.py install --iso void-live-x86_64-20250202-base.iso --netline
+python3 tests/vm/check.py all             # base, enroll, sb, lock, desktop
+python3 tests/vm/check.py deadman         # дамп RAM после выключения: без модуля и с ним
+python3 tests/vm/check.py totp --repo     # tpm2-totp на swtpm (--repo: свежие файлы в VM)
 ```
 
 Стенд поднимает VM с NVMe-диском, пустой прошивкой в Setup Mode и TPM, грузит
