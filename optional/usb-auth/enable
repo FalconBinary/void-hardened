@@ -1,0 +1,33 @@
+#!/bin/bash
+# void-hardened: защита от BadUSB — авторизация USB по требованию (docs/13, usb-auth).
+. "$(dirname "$0")/../lib.sh"
+say "проверка портов: внешние не должны быть «hardwired»"
+for p in /sys/bus/usb/devices/*/port/connect_type; do
+	printf '  %-50s %s\n' "$p" "$(cat "$p")"
+done
+cat <<EOT
+Сверьте: порты, к которым вы физически подключаете устройства снаружи, должны быть
+«hotplug» или «unknown», а не «hardwired» — иначе ядро доверит им (ошибка ACPI).
+Встроенная клавиатура MSI GF63 — i8042 (не USB), её это не касается; USB-клавиатура и
+мышь снаружи работать перестанут (только FIDO-ключ из списка и флешки через vh-usb).
+Пароль LUKS вводится со встроенной клавиатуры: внешняя USB в initramfs тоже не работает.
+EOT
+confirm_exact usb "Включить авторизацию USB?"
+install -d -m 0755 /usr/local/libexec/vh
+install -m 0755 "$MOD_DIR/vh-usb-udev" /usr/local/libexec/vh/vh-usb-udev
+install -m 0755 "$MOD_DIR/vh-usb" /usr/local/sbin/vh-usb
+install -m 0755 "$MOD_DIR/vh-usb-allow-key" /usr/local/sbin/vh-usb-allow-key
+install -m 0644 "$MOD_DIR/98-vh-usb-auth.rules" /etc/udev/rules.d/98-vh-usb-auth.rules
+touch /etc/vh/usb-keys.conf
+save_orig /etc/doas.conf
+grep -q 'vh-usb args attach' /etc/doas.conf || cat >> /etc/doas.conf <<EOT
+# флешки без админа (optional/usb-auth): только эти аргументы
+permit nopass $VH_USER as root cmd /usr/local/sbin/vh-usb args attach
+permit nopass $VH_USER as root cmd /usr/local/sbin/vh-usb args detach
+permit nopass $VH_USER as root cmd /usr/local/sbin/vh-usb args list
+EOT
+doas -C /etc/doas.conf || { restore_orig /etc/doas.conf; die "doas.conf с ошибкой"; }
+cmdline_add usbcore.authorized_default=2
+rebuild_uki
+mark_enabled
+echo "Действует после перезагрузки. Клавиши mango: Super+U — подключить флешку, Super+Shift+U — отключить."

@@ -1,0 +1,169 @@
+#!/usr/bin/python3 -I
+"""vh-open — открыть недоверенный файл в песочнице (optional/viewers, docs/12, docs/13).
+
+  vh-open ФАЙЛ          — PDF → zathura, картинки → imv, видео/аудио → mpv, текст → less
+  vh-open --gpu ФАЙЛ    — mpv с аппаратным декодированием (свои файлы: render node i915)
+
+Песочница bwrap: без сети и user namespace, свой /proc без счётчиков прерываний, /tmp —
+каталог на noexec-tmpfs хоста, Wayland — только через фильтр vh-wlfilter, звук — через
+ограниченный сокет PipeWire (без микрофона), seccomp-фильтр vh-seccomp, PR_SET_MDWE
+(W^X силами ядра) для программ без JIT.
+
+Файл открывается без гонки «проверил путь — открыл другой»: компоненты пути проходятся
+через openat(O_NOFOLLOW) от каталога, последний — O_PATH|O_NOFOLLOW, затем fstat —
+обычный файл; в bwrap передаётся дескриптор (--ro-bind-fd), путь больше не используется.
+Симлинки, подложенные браузером, отвергаются (а на /home/xfer — nosymfollow и так).
+"""
+import ctypes
+import os
+import stat
+import sys
+
+SECCOMP = "/usr/local/libexec/vh/vh-seccomp"
+WL = "/run/vh-sandbox/wayland"
+PULSE = "/run/vh-sandbox/pulse"
+MFD_NOEXEC_SEAL = 0x0008
+
+
+def die(msg):
+    print(f"vh-open: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def open_nofollow(path):
+    """O_PATH-дескриптор обычного файла; ни один компонент пути не симлинк."""
+    path = os.path.abspath(path)
+    parts = [p for p in path.split("/") if p]
+    fd = os.open("/", os.O_PATH | os.O_DIRECTORY)
+    try:
+        for p in parts[:-1]:
+            nfd = os.open(p, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nfd
+        ffd = os.open(parts[-1], os.O_PATH | os.O_NOFOLLOW, dir_fd=fd)
+    except OSError as e:
+        die(f"{path}: {e.strerror} (симлинк или нет файла)")
+    finally:
+        os.close(fd)
+    st = os.fstat(ffd)
+    if not stat.S_ISREG(st.st_mode):
+        die(f"{path}: не обычный файл")
+    return ffd, os.path.basename(path), st.st_size
+
+
+def kind_of(fd, name):
+    """Тип по сигнатуре (а не только по расширению): без libmagic вне песочницы."""
+    rfd = os.open(f"/proc/self/fd/{fd}", os.O_RDONLY | os.O_NOFOLLOW)
+    head = os.read(rfd, 64)
+    os.close(rfd)
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if head.startswith(b"%PDF"):
+        return "pdf"
+    if head[:8] == b"\x89PNG\r\n\x1a\n" or head[:3] == b"\xff\xd8\xff" or head[:6] in (b"GIF87a", b"GIF89a") \
+            or (head[:4] == b"RIFF" and head[8:12] == b"WEBP"):
+        return "image"
+    if head[4:8] == b"ftyp" or head[:4] in (b"\x1aE\xdf\xa3", b"OggS", b"fLaC", b"ID3\x03", b"ID3\x04") \
+            or (head[:4] == b"RIFF" and head[8:12] in (b"AVI ", b"WAVE")) or ext in ("mp3", "opus", "m4a"):
+        return "media"
+    if b"\0" not in head:
+        return "text"
+    die(f"{name}: неизвестный тип — откройте вручную в нужной программе с песочницей")
+
+
+def seccomp_fd():
+    import subprocess
+    prog = subprocess.run([SECCOMP, "viewer"], capture_output=True, check=True).stdout
+    try:
+        fd = os.memfd_create("vh-seccomp", MFD_NOEXEC_SEAL)
+    except OSError:
+        fd = os.memfd_create("vh-seccomp", 0)
+    os.write(fd, prog)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.set_inheritable(fd, True)
+    return fd
+
+
+def mdwe():
+    """PR_SET_MDWE(PR_MDWE_REFUSE_EXEC_GAIN): отображение не станет исполняемым после
+    создания. Наследуется через fork/exec. Не для программ с JIT."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(65, 1, 0, 0, 0) != 0:
+        print(f"vh-open: PR_SET_MDWE не включён (errno {ctypes.get_errno()})", file=sys.stderr)
+
+
+def main():
+    args = sys.argv[1:]
+    gpu = False
+    if args and args[0] == "--gpu":
+        gpu, args = True, args[1:]
+    if len(args) != 1:
+        print(__doc__)
+        sys.exit(2)
+    ffd, name, _size = open_nofollow(args[0])
+    os.set_inheritable(ffd, True)
+    kind = kind_of(ffd, name)
+    uid = os.getuid()
+    rt = f"/run/user/{uid}"
+    home = os.path.expanduser("~")
+    work = f"/tmp/vh-open-{uid}-{os.getpid()}"
+    os.makedirs(f"{work}/tmp", mode=0o700)
+    os.makedirs(f"{work}/home", mode=0o700)
+    os.makedirs(f"{work}/run", mode=0o700)
+    target = f"/input/{name}"
+    sfd = seccomp_fd()
+    b = ["bwrap",
+         "--unshare-all", "--disable-userns", "--assert-userns-disabled",
+         "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv",
+         "--ro-bind", "/usr", "/usr",
+         "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin",
+         "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64",
+         "--ro-bind", "/etc/fonts", "/etc/fonts",
+         "--ro-bind-try", "/etc/ld.so.cache", "/etc/ld.so.cache",
+         "--ro-bind", "/etc/localtime", "/etc/localtime",
+         "--ro-bind-try", "/var/cache/fontconfig", "/var/cache/fontconfig",
+         "--proc", "/proc",
+         "--ro-bind", "/dev/null", "/proc/interrupts",
+         "--ro-bind", "/dev/null", "/proc/softirqs",
+         "--ro-bind", "/dev/null", "/proc/stat",
+         "--dev", "/dev",
+         "--bind", f"{work}/tmp", "/tmp",
+         "--bind", f"{work}/home", home,
+         "--bind", f"{work}/run", rt,
+         "--ro-bind-fd", str(ffd), target,
+         "--seccomp", str(sfd),
+         "--setenv", "HOME", home, "--setenv", "PATH", "/usr/bin",
+         "--setenv", "XDG_RUNTIME_DIR", rt, "--setenv", "LANG", os.environ.get("LANG", "C.UTF-8"),
+         "--setenv", "GDK_BACKEND", "wayland", "--setenv", "NO_AT_BRIDGE", "1",
+         "--setenv", "GSETTINGS_BACKEND", "memory", "--chdir", "/tmp"]
+    if kind != "text":
+        if not os.path.exists(WL):
+            die(f"нет {WL} — vh-wlfilter не запущен")
+        b += ["--bind", WL, f"{rt}/wayland-0", "--setenv", "WAYLAND_DISPLAY", "wayland-0"]
+    jit = False
+    if kind == "pdf":
+        cmd = ["zathura", "--", target]
+    elif kind == "image":
+        cmd = ["imv", "--", target]
+    elif kind == "media":
+        b += ["--bind-try", PULSE, f"{rt}/pulse/native",
+              "--setenv", "PULSE_SERVER", f"unix:{rt}/pulse/native"]
+        cmd = ["mpv", "--no-config", "--load-scripts=no", "--ytdl=no", "--osc=no"]
+        if gpu:
+            b += ["--dev-bind-try", "/dev/dri/renderD128", "/dev/dri/renderD128",
+                  "--ro-bind", "/sys", "/sys"]
+            cmd.append("--hwdec=vaapi")
+        else:
+            cmd += ["--vo=wlshm", "--hwdec=no"]
+        cmd += ["--", target]
+        jit = True                                    # mpv: Lua (возможно LuaJIT) — без MDWE
+    else:
+        b += ["--setenv", "LESSSECURE", "1", "--setenv", "LESSHISTFILE", "-",
+              "--setenv", "TERM", os.environ.get("TERM", "xterm")]
+        cmd = ["less", "--", target]
+    if not jit:
+        mdwe()
+    os.execv("/usr/bin/bwrap", ["bwrap"] + b[1:] + ["--"] + cmd)   # абсолютный путь: PATH не доверяем
+
+
+if __name__ == "__main__":
+    main()

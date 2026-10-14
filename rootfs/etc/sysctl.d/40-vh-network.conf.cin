@@ -1,0 +1,48 @@
+# void-hardened: сеть — защита (S) и скорость (P). docs/06-network.md, docs/07-network-speed.md.
+
+# --- (S) хост, а не маршрутизатор
+net.ipv4.ip_forward = 0
+net.ipv4.conf.all.route_localnet = 0
+net.ipv4.conf.all.accept_local = 0
+# --- (S) ICMP redirect и source routing. Для хоста all и интерфейс работают как ИЛИ,
+#     поэтому задаём и all, и default (наследуют интерфейсы, созданные позже).
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.conf.default.secure_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+# --- (S) обратная проверка источника (строгая), журнал «марсиан»
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.conf.default.log_martians = 1
+# --- (S) ARP: отвечать только за адреса своего интерфейса, не принимать незапрошенное
+net.ipv4.conf.all.arp_ignore = 1
+net.ipv4.conf.all.arp_announce = 2
+net.ipv4.conf.all.arp_accept = 0
+net.ipv4.conf.all.drop_gratuitous_arp = 1
+net.ipv4.conf.default.drop_gratuitous_arp = 1
+# --- (S) ICMP и TCP
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_rfc1337 = 1
+net.ipv4.tcp_fastopen = 0                # cookie TFO — идентификатор для трекинга
+# --- (S) ping через ICMP-сокеты без cap_net_raw — только группе netdiag
+net.ipv4.ping_group_range = @VH_NETDIAG_GID@ @VH_NETDIAG_GID@
+
+# --- (P) TCP: BBR + fq, без сброса окна после простоя
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_mtu_probing = 1             # PMTU black hole за VPN
+net.ipv4.tcp_notsent_lowat = 131072      # меньше задержка у интерактивных потоков
+# --- (P) буферы под QUIC/HTTP3 (программа получает их, только если просит)
+net.core.rmem_max = 7500000
+net.core.wmem_max = 7500000
+# --- (P) маршрут через упавший линк не используется
+net.ipv4.conf.all.ignore_routes_with_linkdown = 1
+net.ipv4.conf.default.ignore_routes_with_linkdown = 1

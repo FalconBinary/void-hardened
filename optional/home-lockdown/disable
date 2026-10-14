@@ -1,0 +1,12 @@
+#!/bin/bash
+# void-hardened: вернуть домашний каталог пользователю целиком.
+. "$(dirname "$0")/../lib.sh"
+u=$VH_USER h=/home/$u g=$(id -gn "$u")
+pgrep -u "$u" >/dev/null && die "у $u есть процессы — выйдите из сеанса"
+for p in "$h"/.[!.]* "$h"/*; do
+	[ -e "$p" ] || continue
+	[ "${p#"$h"/}" = Downloads ] && continue
+	chown -R -h "$u:$g" "$p"
+done
+chown "$u:$g" "$h"; chmod 0700 "$h"
+mark_disabled

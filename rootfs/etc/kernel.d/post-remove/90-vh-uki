@@ -1,0 +1,3 @@
+#!/bin/sh
+# Хук удаления ядра: UKI удалена dracut-uefi — убрать её из limine.conf.
+exec /usr/local/sbin/vh-limine-update

@@ -1,0 +1,6 @@
+# void-hardened: авторизация USB (optional/usb-auth, docs/13). Решения — vh-usb-udev.
+# Корневые хабы: интерфейсы новых устройств не авторизуются автоматически — даже
+# авторизованная флешка не получит драйвер клавиатуры для своего HID-интерфейса.
+ACTION=="add", SUBSYSTEM=="usb", DEVTYPE=="usb_device", ATTR{interface_authorized_default}=="?*", ATTR{interface_authorized_default}="0"
+ACTION=="add", SUBSYSTEM=="usb", DEVTYPE=="usb_device", ATTR{authorized}=="0", RUN+="/usr/local/libexec/vh/vh-usb-udev device %p"
+ACTION=="add", SUBSYSTEM=="usb", DEVTYPE=="usb_interface", ATTR{authorized}=="0", RUN+="/usr/local/libexec/vh/vh-usb-udev interface %p"

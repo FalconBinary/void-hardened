@@ -1,0 +1,6 @@
+#!/bin/sh
+# Отмонтировать ESP, если её смонтировал хук 05-vh-esp.
+[ -e /run/vh-esp-by-hook ] || exit 0
+rm -f /run/vh-esp-by-hook
+sync
+umount /boot/efi

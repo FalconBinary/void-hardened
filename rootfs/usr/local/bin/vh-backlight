@@ -1,0 +1,16 @@
+#!/bin/sh
+# void-hardened: яркость без root и без SUID — запись в sysfs (группа backlight).
+#   vh-backlight +5 | -5 | 50   (проценты)
+set -eu
+for d in /sys/class/backlight/*; do break; done
+[ -w "$d/brightness" ] || { echo "нет доступа к $d/brightness (группа backlight?)" >&2; exit 1; }
+max=$(cat "$d/max_brightness") cur=$(cat "$d/brightness")
+step=$(( max / 100 )); [ "$step" -ge 1 ] || step=1
+case ${1:?укажите +N, -N или N} in
+	+*) v=$(( cur + ${1#+} * step )) ;;
+	-*) v=$(( cur - ${1#-} * step )) ;;
+	*)  v=$(( $1 * step )) ;;
+esac
+[ "$v" -lt "$step" ] && v=$step   # не гасить экран полностью
+[ "$v" -gt "$max" ] && v=$max
+echo "$v" > "$d/brightness"

@@ -1,0 +1,11 @@
+#!/bin/sh
+# void-hardened: запуск браузера из сеанса (горячая клавиша, zrun).
+#   vh-browse            — доверенный профиль (логины, закладки, GPU)
+#   vh-browse untrusted  — одноразовый профиль: без JIT, WebGL и GPU, ничего не помнит
+# Браузер работает от отдельного пользователя в bwrap; запуск — через узкое правило
+# doas без пароля (docs/08). Ссылки из других программ сюда не передаются: правило
+# doas не принимает произвольных аргументов.
+case ${1:-trusted} in
+	trusted|untrusted) exec doas /usr/local/sbin/vh-browser "${1:-trusted}" ;;
+	*) echo "использование: vh-browse [untrusted]" >&2; exit 2 ;;
+esac

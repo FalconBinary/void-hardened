@@ -1,0 +1,16 @@
+#!/bin/bash
+# void-hardened: просмотрщики недоверенных файлов в песочнице (docs/13, viewers).
+. "$(dirname "$0")/../lib.sh"
+say "пакеты: zathura (PDF, mupdf), imv (картинки), mpv (видео)"
+xbps-install -Sy zathura zathura-pdf-mupdf imv mpv
+install -d -m 0755 /usr/local/libexec/vh
+install -m 0755 "$MOD_DIR/vh-seccomp" /usr/local/libexec/vh/vh-seccomp
+install -m 0755 "$MOD_DIR/vh-open" /usr/local/bin/vh-open
+/usr/local/libexec/vh/vh-seccomp viewer | wc -c | awk '{printf "фильтр seccomp: %d инструкций BPF\n", $1/8}'
+mark_enabled
+cat <<EOT
+Открыть скачанное: vh-open ~/Downloads/файл.pdf  (картинки, видео, текст — так же)
+Свои видео с аппаратным декодированием: vh-open --gpu ~/Videos/фильм.mkv
+PDF из сети — сначала во встроенном просмотрщике браузера (одноразовый профиль).
+Генераторы миниатюр (tumbler и т. п.) не ставьте: превью разбирает файл вне песочницы.
+EOT

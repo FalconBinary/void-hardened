@@ -1,0 +1,39 @@
+#!/bin/sh
+# void-hardened: применить черновик конфига пользователя (optional/home-lockdown, docs/12).
+#   doas vh-apply-config [ПОЛЬЗОВАТЕЛЬ]
+# Пользователь правит копии в ~/config-drafts/<путь от $HOME>, например
+# ~/config-drafts/.config/foot/foot.ini. Админ (на tty2, после выхода пользователя из
+# сеанса) видит diff и строки, которые ЗАПУСКАЮТ программы, и подтверждает каждый файл.
+# Файл ставится владельцем root, только для чтения: вредонос с правами пользователя
+# не впишет туда свою команду автозапуска.
+set -eu
+PATH=/usr/bin
+[ "$(id -u)" = 0 ] || { echo "запустите: doas vh-apply-config" >&2; exit 1; }
+. /etc/vh/vh.env
+u=${1:-$VH_USER}
+h=$(getent passwd "$u" | cut -d: -f6)
+d=$h/config-drafts
+[ -d "$d" ] || { echo "нет $d"; exit 0; }
+find "$d" -type f ! -name '*.orig' | while read -r f; do
+	rel=${f#"$d"/}
+	case $rel in
+		.config/*|.bashrc|.bash_profile|.profile|.inputrc) ;;
+		*) echo "пропуск $rel: применяются только .config/*, .bashrc, .bash_profile, .profile, .inputrc"; continue ;;
+	esac
+	case $rel in *..*) echo "пропуск $rel: «..» в пути"; continue ;; esac
+	[ -L "$f" ] && { echo "пропуск $rel: симлинк"; continue; }
+	dst=$h/$rel
+	echo "=================== $rel"
+	if [ -e "$dst" ]; then diff -u "$dst" "$f" || true; else cat "$f"; fi
+	echo "--- строки, запускающие программы (проверьте каждую):"
+	grep -nE 'exec|spawn|shell|script|command|fsmonitor|hooksPath|pager|LESSOPEN|PROMPT_COMMAND|trap|alias|source|^\s*\.' "$f" || echo "    нет"
+	printf 'Применить %s? [y/N] ' "$rel"
+	read -r a < /dev/tty
+	case $a in
+		y|Y|д|Д)
+			install -d -o root -g root -m 0755 "$(dirname "$dst")"
+			install -o root -g root -m 0644 "$f" "$dst"
+			echo "применено" ;;
+		*) echo "пропущено" ;;
+	esac
+done

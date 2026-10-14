@@ -1,0 +1,2 @@
+# void-hardened: RTL8111/8168 (r8169) — EEE выключен: частая причина обрывов линка (docs/07).
+ACTION=="add", SUBSYSTEM=="net", DRIVERS=="r8169", RUN+="/usr/bin/ethtool --set-eee $name eee off"

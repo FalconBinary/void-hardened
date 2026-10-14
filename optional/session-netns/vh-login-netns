@@ -1,0 +1,11 @@
+#!/bin/sh
+# void-hardened: программа входа для tty повседневного пользователя (optional/session-netns).
+# agetty запускает её от root вместо login: новый пустой сетевой namespace (только lo),
+# затем обычный login. Весь сеанс — mango, терминалы, программы — живёт без сети на
+# уровне ядра: нет ни интерфейсов, ни 127.0.0.1:53, ни абстрактных сокетов браузера.
+# Wayland, PipeWire, D-Bus (zwifi/iwd) работают через сокеты в ФС и не затронуты.
+# Браузер уходит в сеть через root-лаунчер (nsenter в netns init, docs/08).
+exec /usr/bin/unshare --net -- /bin/sh -c '
+	/usr/bin/ip link set lo up
+	/usr/bin/sysctl -qw net.mptcp.enabled=0
+	exec /usr/bin/login "$@"' vh-login-netns "$@"

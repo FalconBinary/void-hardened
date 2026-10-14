@@ -1,0 +1,23 @@
+#!/bin/bash
+# void-hardened: сеанс mango под AppArmor (docs/13, session-apparmor).
+#   doas /root/vh/optional/session-apparmor/enable            — режим complain (только журнал)
+#   doas /root/vh/optional/session-apparmor/enable --enforce  — запрещать
+# Начните с complain: неделю поработайте, проверьте журнал отказов и только потом enforce.
+. "$(dirname "$0")/../lib.sh"
+mode=complain; [ "${1:-}" = --enforce ] && mode=""
+VH_AA_MODE=${mode:+, $mode}
+export VH_AA_MODE
+grep -q 'unix-chkpwd' /etc/runit/core-services/09-vh-apparmor.sh || die "нет профиля unix-chkpwd в списке загрузки"
+render "$MOD_DIR/vh.local.session" /etc/apparmor.d/vh.local.session
+sed -i 's/(attach_disconnected , /(attach_disconnected, /' /etc/apparmor.d/vh.local.session
+apparmor_parser --replace --write-cache --cache-loc /var/cache/apparmor /etc/apparmor.d/vh.local.session \
+	|| { rm -f /etc/apparmor.d/vh.local.session; die "профиль не загрузился"; }
+mark_enabled
+cat <<EOT
+Режим: ${mode:-enforce}. Действует для mango, запущенного после этого (выйдите из сеанса).
+Журнал отказов: doas svlogtail kernel | grep 'apparmor="\(DENIED\|ALLOWED\)".*vh.mango'
+Проверка в enforce (из терминала foot):
+  ls \$XDG_RUNTIME_DIR/mango-*.sock && python3 -c 'import socket,glob,os;s=socket.socket(socket.AF_UNIX);s.connect(glob.glob(os.environ["XDG_RUNTIME_DIR"]+"/mango-*.sock")[0])'  → Permission denied
+  unshare -U true → Operation not permitted;   панель netline и swaylock работают
+Если сеанс не стартует: войдите админом на tty2 и выполните disable.
+EOT

@@ -1,0 +1,32 @@
+#!/bin/sh
+# void-hardened: профиль питания без демонов (docs/11). Вызывается udev-правилом
+# при подключении/отключении зарядки и один раз при загрузке. Аргументы не читает.
+#   от сети:     EPP balance_performance, runtime PM устройств PCI выключен (on)
+#   от батареи:  EPP balance_power,       runtime PM включён (auto)
+# Энергосбережение Wi-Fi профилем не переключается: оно выключено всегда (docs/07).
+set -u
+PATH=/usr/bin
+on_ac=0 has_bat=0
+for s in /sys/class/power_supply/*; do
+	[ -r "$s/type" ] || continue
+	case $(cat "$s/type") in
+		Mains) [ "$(cat "$s/online" 2>/dev/null)" = 1 ] && on_ac=1 ;;
+		Battery) has_bat=1 ;;
+	esac
+done
+[ "$has_bat" = 0 ] && on_ac=1   # стационарный ПК или VM
+
+if [ "$on_ac" = 1 ]; then epp=balance_performance rpm=on state=ac
+else epp=balance_power rpm=auto state=battery; fi
+
+for p in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference; do
+	[ -w "$p" ] && echo "$epp" > "$p"
+done
+for d in /sys/bus/pci/devices/*; do
+	# мосты не трогаем (через них засыпает dGPU), NVIDIA — всегда auto (docs/04)
+	case $(cat "$d/class") in 0x0604*) continue ;; esac
+	[ "$(cat "$d/vendor")" = 0x10de ] && continue
+	[ -w "$d/power/control" ] && echo "$rpm" > "$d/power/control" 2>/dev/null
+done
+install -d -m 0755 /run/vh
+echo "$state" > /run/vh/power

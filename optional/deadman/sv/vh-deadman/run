@@ -1,0 +1,10 @@
+#!/bin/sh
+# void-hardened: dead man's switch (optional/deadman, docs/13). Настройки — /etc/vh/deadman.conf.
+exec 2>&1
+if [ ! -e /etc/vh/optional/deadman ]; then
+	# модуль выключен: сервис убирает себя при загрузке — не раньше, потому что
+	# аппаратный сторож с nowayout оставался бы без «поглаживания» до перезагрузки
+	rm -f /var/service/vh-deadman
+	exec pause
+fi
+exec /usr/local/sbin/vh-deadman daemon

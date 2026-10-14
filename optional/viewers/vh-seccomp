@@ -1,0 +1,107 @@
+#!/usr/bin/python3 -I
+"""vh-seccomp — генератор фильтра seccomp-BPF для песочниц (optional/viewers, docs/13).
+
+Это данные, а не сборка из исходников: программа classic BPF собирается модулем
+struct и передаётся в bwrap --seccomp FD. Фильтр применяется после сборки песочницы,
+наследуется всеми потомками и не снимается.
+
+Порядок инструкций — ради кэша seccomp ядра: сначала архитектура и бит x32, затем
+вызовы с проверкой аргументов и запрещённые, всё прочее — безусловный ALLOW без
+чтения аргументов: такие вызовы ядро кэширует и BPF для них не запускает.
+
+  vh-seccomp viewer > filter.bpf
+"""
+import struct
+import sys
+
+AUDIT_ARCH_X86_64 = 0xC000003E
+X32_BIT = 0x40000000
+RET_ALLOW = 0x7FFF0000
+RET_KILL = 0x80000000
+EPERM, ENOSYS, EAFNOSUPPORT = 1, 38, 97
+
+
+def errno(e):
+    return 0x00050000 | e
+
+
+# x86_64
+NR = dict(socket=41, socketpair=53, clone=56, clone3=435, unshare=272, setns=308,
+          personality=135, perf_event_open=298, bpf=321, userfaultfd=323, add_key=248,
+          request_key=249, keyctl=250, kexec_load=246, kexec_file_load=320,
+          io_uring_setup=425, io_uring_enter=426, io_uring_register=427, modify_ldt=154,
+          mount=165, umount2=166, pivot_root=155, fsopen=430, fsconfig=431, fsmount=432,
+          fspick=433, move_mount=429, open_tree=428, mount_setattr=442, ptrace=101,
+          process_vm_readv=310, process_vm_writev=311, init_module=175, finit_module=313,
+          delete_module=176, iopl=172, ioperm=173, open_by_handle_at=304, chroot=161,
+          acct=163, swapon=167, swapoff=168, syslog=103, vhangup=153, quotactl=179)
+CLONE_NEW_MASK = 0x7E020000        # NEWNS|NEWCGROUP|NEWUTS|NEWIPC|NEWUSER|NEWPID|NEWNET
+AF_UNIX = 1
+
+LD_W_ABS, JEQ, JSET, RET = 0x20, 0x15, 0x45, 0x06
+
+
+def ins(code, jt, jf, k):
+    return struct.pack("<HBBI", code, jt, jf, k)
+
+
+def arg_lo(i):
+    return 16 + 8 * i
+
+
+def viewer():
+    deny = ["perf_event_open", "bpf", "userfaultfd", "add_key", "request_key", "keyctl",
+            "kexec_load", "kexec_file_load", "io_uring_setup", "io_uring_enter",
+            "io_uring_register", "modify_ldt", "mount", "umount2", "pivot_root", "fsopen",
+            "fsconfig", "fsmount", "fspick", "move_mount", "open_tree", "mount_setattr",
+            "ptrace", "process_vm_readv", "process_vm_writev", "init_module", "finit_module",
+            "delete_module", "iopl", "ioperm", "open_by_handle_at", "chroot", "acct",
+            "swapon", "swapoff", "syslog", "vhangup", "quotactl", "unshare", "setns"]
+    p = [
+        ins(LD_W_ABS, 0, 0, 4),                       # A = arch
+        ins(JEQ, 1, 0, AUDIT_ARCH_X86_64),
+        ins(RET, 0, 0, RET_KILL),                     # чужая архитектура (int 0x80 и т. п.)
+        ins(LD_W_ABS, 0, 0, 0),                       # A = nr
+        ins(0x35, 0, 1, X32_BIT),                     # JGE: системные вызовы x32
+        ins(RET, 0, 0, errno(ENOSYS)),
+    ]
+    # socket/socketpair: только AF_UNIX (сети в песочнице нет и так — это второй слой)
+    for name in ("socket", "socketpair"):
+        p += [ins(JEQ, 0, 4, NR[name]),
+              ins(LD_W_ABS, 0, 0, arg_lo(0)),
+              ins(JEQ, 0, 1, AF_UNIX),
+              ins(RET, 0, 0, RET_ALLOW),
+              ins(RET, 0, 0, errno(EAFNOSUPPORT))]
+    # clone: без флагов CLONE_NEW* (новые namespace)
+    p += [ins(JEQ, 0, 4, NR["clone"]),
+          ins(LD_W_ABS, 0, 0, arg_lo(0)),
+          ins(JSET, 1, 0, CLONE_NEW_MASK),
+          ins(RET, 0, 0, RET_ALLOW),
+          ins(RET, 0, 0, errno(EPERM))]
+    # clone3: флаги лежат в структуре по указателю — BPF их не видит. ENOSYS: glibc
+    # откатится на clone, флаги которого проверены выше
+    p += [ins(JEQ, 0, 1, NR["clone3"]), ins(RET, 0, 0, errno(ENOSYS))]
+    # personality: только 0 и запрос текущего значения (0xffffffff). READ_IMPLIES_EXEC
+    # делает память исполняемой, ADDR_NO_RANDOMIZE выключает ASLR потомкам
+    p += [ins(JEQ, 0, 5, NR["personality"]),
+          ins(LD_W_ABS, 0, 0, arg_lo(0)),
+          ins(JEQ, 2, 0, 0),
+          ins(JEQ, 1, 0, 0xFFFFFFFF),
+          ins(RET, 0, 0, errno(EPERM)),
+          ins(RET, 0, 0, RET_ALLOW)]
+    for name in deny:
+        p += [ins(JEQ, 0, 1, NR[name]), ins(RET, 0, 0, errno(EPERM))]
+    p.append(ins(RET, 0, 0, RET_ALLOW))
+    return b"".join(p)
+
+
+def main():
+    kind = sys.argv[1] if len(sys.argv) > 1 else ""
+    if kind != "viewer":
+        print(__doc__, file=sys.stderr)
+        sys.exit(2)
+    sys.stdout.buffer.write(viewer())
+
+
+if __name__ == "__main__":
+    main()

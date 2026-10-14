@@ -1,0 +1,8 @@
+#!/bin/bash
+# void-hardened: выключить строгий режим сети — вернуть правила базового слоя.
+. "$(dirname "$0")/../lib.sh"
+render "$VH_ROOT/rootfs/etc/vh/nft/people.nft.in" /etc/vh/nft/people.nft
+render "$VH_ROOT/rootfs/etc/vh/nft/lo-dns.nft.in" /etc/vh/nft/lo-dns.nft
+rm -f /etc/vh/nft/people.nft.vh-orig /etc/vh/nft/lo-dns.nft.vh-orig
+reload_nft || die "набор nftables не загрузился"
+mark_disabled

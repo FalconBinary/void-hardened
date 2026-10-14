@@ -1,0 +1,11 @@
+# dracut: минимальный initramfs только под это железо (docs/03).
+hostonly="yes"
+hostonly_cmdline="no"
+compress="@VH_INITRD_COMPRESS@"
+early_microcode="yes"
+reproducible="yes"
+uefi_stub="/usr/lib/systemd/boot/efi/linuxx64.efi.stub"
+# Нужно для пароля LUKS: клавиатура (встроенная i8042 или USB).
+add_drivers+=" xhci_pci usbhid hid_generic atkbd i8042 "
+add_dracutmodules+=" crypt "
+omit_dracutmodules+=" plymouth bluetooth network network-legacy nfs iscsi nbd lvm mdraid dmraid multipath btrfs qemu qemu-net biosdevname systemd "

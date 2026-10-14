@@ -1,0 +1,242 @@
+#!/usr/bin/python3 -I
+"""vh-uki-verify — проверка входных данных UKI перед подписью (optional/sb-offline-keys).
+
+Ключ db на офлайн-носителе не спасает, если root-руткит подменил то, из чего собирается
+UKI (модули и конфиги dracut, cmdline, хуки kernel.d): при обновлении вы сами подпишете
+его образ. Поэтому до подписи:
+
+  1. xbps-pkgdb — файлы пакетов, из которых собирается UKI, совпадают с базой xbps;
+  2. хэши файлов НЕ из пакетов, влияющих на сборку, — с эталоном на носителе ключа;
+  3. секция .cmdline новой UKI — побайтно с эталоном на носителе, .uname — с версией;
+  4. содержимое initramfs (секция .initrd) — с прошлой одобренной UKI: новые, удалённые
+     и изменённые файлы показываются, админ подтверждает их вручную.
+
+Эталоны лежат на носителе с ключом (REF), а не на корневой ФС: руткит работающей
+системы не перепишет их без носителя. Остаточный риск: руткит, перехвативший саму
+проверку или sbctl, её обойдёт — полностью закрывает только подпись из live-флешки.
+
+  vh-uki-verify UKI ВЕРСИЯ     — проверить (вызывает vh-limine-update перед подписью)
+  vh-uki-verify --init [UKI]   — записать эталоны с текущей системы (после чистой установки)
+"""
+import glob
+import hashlib
+import os
+import struct
+import subprocess
+import sys
+
+REF = "/run/vh-keys/ref"
+PKGS = ["dracut", "dracut-uefi", "systemd-boot-efistub", "cryptsetup", "intel-ucode",
+        "linux-firmware-intel", "tpm2-tools", "tpm2-totp", "limine", "sbctl", "eudev", "kmod"]
+INPUTS = ["/etc/dracut.conf", "/etc/dracut.conf.d", "/etc/default/dracut-uefi-hook",
+          "/etc/kernel.d", "/etc/vh/boot.conf", "/etc/vh/vh.env", "/usr/local/sbin/vh-limine-update",
+          "/usr/local/sbin/vh-uki-verify", "/usr/local/lib/dracut", "/etc/modprobe.d"]
+
+
+def die(msg):
+    print(f"vh-uki-verify: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def sha256(path=None, data=None):
+    h = hashlib.sha256()
+    if data is not None:
+        h.update(data)
+    else:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    return h.hexdigest()
+
+
+def pe_sections(path):
+    """Секции PE-файла: {имя: байты}. Без binutils — разбор заголовков struct."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:2] != b"MZ":
+        die(f"{path}: не PE-файл")
+    (pe,) = struct.unpack_from("<I", data, 0x3C)
+    if data[pe:pe + 4] != b"PE\0\0":
+        die(f"{path}: нет сигнатуры PE")
+    nsec, = struct.unpack_from("<H", data, pe + 6)
+    opt_size, = struct.unpack_from("<H", data, pe + 20)
+    off = pe + 24 + opt_size
+    out = {}
+    for i in range(nsec):
+        name, vsize, _va, rsize, rptr = struct.unpack_from("<8sIIII", data, off + i * 40)
+        name = name.rstrip(b"\0").decode("ascii", "replace")
+        out[name] = data[rptr:rptr + min(vsize, rsize) if vsize else rptr + rsize]
+    return out
+
+
+def input_hashes():
+    res = {}
+    for p in INPUTS:
+        files = [p] if os.path.isfile(p) else sorted(glob.glob(p + "/**", recursive=True))
+        for f in files:
+            if os.path.isfile(f) and not f.endswith((".vh-orig", ".new")):
+                res[f] = sha256(f)
+    return res
+
+
+def initrd_files(blob):
+    """{путь: sha256} всех файлов initramfs: ранний cpio (микрокод) + сжатый основной."""
+    files = {}
+    off = 0
+    while off < len(blob):
+        if blob[off:off + 6] in (b"070701", b"070702"):
+            off = parse_cpio(blob, off, files, "early:")
+            while off < len(blob) and blob[off] == 0:
+                off += 1
+            continue
+        tool = {b"\x28\xb5\x2f\xfd": ["zstd", "-dcq"], b"\x02\x21\x4c\x18": ["lz4", "-dcq"],
+                b"\x04\x22\x4d\x18": ["lz4", "-dcq"]}.get(blob[off:off + 4])
+        if not tool:
+            die(f"неизвестный формат initramfs на смещении {off}")
+        raw = subprocess.run(tool, input=blob[off:], capture_output=True, check=True).stdout
+        parse_cpio(raw, 0, files, "")
+        break
+    return files
+
+
+def parse_cpio(buf, off, files, prefix):
+    while off + 110 <= len(buf):
+        hdr = buf[off:off + 110]
+        if hdr[:6] not in (b"070701", b"070702"):
+            break
+        f = [int(hdr[6 + 8 * i:14 + 8 * i], 16) for i in range(13)]
+        mode, fsize, nsize = f[1], f[6], f[11]
+        name = buf[off + 110:off + 110 + nsize - 1].decode("utf-8", "replace")
+        off = (off + 110 + nsize + 3) & ~3
+        body = buf[off:off + fsize]
+        off = (off + fsize + 3) & ~3
+        if name == "TRAILER!!!":
+            break
+        kind = mode & 0o170000
+        if kind == 0o100000:
+            files[prefix + name] = sha256(data=body)
+        elif kind == 0o120000:
+            files[prefix + name] = "-> " + body.decode("utf-8", "replace")
+        else:
+            files[prefix + name] = f"mode {mode:o}"
+    return off
+
+
+def read_list(path):
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                h, _, name = line.rstrip("\n").partition("  ")
+                out[name] = h
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def write_list(path, d):
+    tmp = path + ".new"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for name in sorted(d):
+            f.write(f"{d[name]}  {name}\n")
+    os.replace(tmp, path)
+
+
+def confirm(prompt):
+    try:
+        with open("/dev/tty", "r+") as tty:
+            tty.write(prompt + " Введите «да»: ")
+            tty.flush()
+            return tty.readline().strip() == "да"
+    except OSError:
+        return False
+
+
+def init(uki):
+    os.makedirs(REF, mode=0o700, exist_ok=True)
+    write_list(f"{REF}/inputs.sha256", input_hashes())
+    if uki:
+        sec = pe_sections(uki)
+        with open(f"{REF}/cmdline", "wb") as f:
+            f.write(sec[".cmdline"].rstrip(b"\0"))
+        write_list(f"{REF}/initrd.sha256", initrd_files(sec[".initrd"]))
+    print(f"эталоны записаны в {REF}")
+
+
+def verify(uki, version):
+    if not os.path.isdir(REF):
+        die(f"нет эталонов {REF} — носитель с ключом не подключён (doas vh-keys mount)")
+    bad = 0
+    pk = [p for p in PKGS if subprocess.run(["xbps-query", p], capture_output=True).returncode == 0]
+    kernel = None
+    try:
+        with open("/etc/vh/vh.env", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VH_KERNEL="):
+                    kernel = line.split("=", 1)[1].strip().strip('"')
+    except FileNotFoundError:
+        pass
+    if kernel:
+        pk.append(kernel)
+    print(f"1. xbps-pkgdb: {' '.join(pk)}")
+    for p in pk:
+        r = subprocess.run(["xbps-pkgdb", p], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"   ✗ {p}: {r.stdout.strip()} {r.stderr.strip()}")
+            bad += 1
+    print("2. файлы сборки не из пакетов — с эталоном на носителе")
+    ref, cur = read_list(f"{REF}/inputs.sha256"), input_hashes()
+    for name in sorted(set(ref) | set(cur)):
+        if ref.get(name) != cur.get(name):
+            state = "новый" if name not in ref else "удалён" if name not in cur else "изменён"
+            print(f"   ✗ {state}: {name}")
+            bad += 1
+    sec = pe_sections(uki)
+    print("3. .cmdline и .uname новой UKI")
+    want = open(f"{REF}/cmdline", "rb").read()
+    got = sec.get(".cmdline", b"").rstrip(b"\0")
+    if got != want:
+        print(f"   ✗ cmdline отличается от эталона:\n     было:  {want.decode(errors='replace')}\n"
+              f"     стало: {got.decode(errors='replace')}")
+        bad += 1
+    uname = sec.get(".uname", b"").rstrip(b"\0").decode(errors="replace")
+    if version and not version.startswith(uname.split("_")[0]) and not uname.startswith(version.split("_")[0]):
+        print(f"   ✗ .uname «{uname}» не соответствует версии пакета {version}")
+        bad += 1
+    if bad:
+        die(f"расхождений: {bad}. Если изменения ваши и осознанные — обновите эталоны: "
+            "doas vh-uki-verify --init (с подключённым носителем)")
+    print("4. содержимое initramfs против прошлой одобренной UKI")
+    old, new = read_list(f"{REF}/initrd.sha256"), initrd_files(sec[".initrd"])
+    added = sorted(set(new) - set(old))
+    removed = sorted(set(old) - set(new))
+    changed = sorted(n for n in set(new) & set(old) if new[n] != old[n])
+    mods = [n for n in added + changed if "/lib/modules/" in n]
+    other = [n for n in added + changed if "/lib/modules/" not in n]
+    print(f"   добавлено {len(added)}, удалено {len(removed)}, изменено {len(changed)} "
+          f"(из них модули ядра: {len(mods)})")
+    for n in other[:200]:
+        print(f"   ± {n}")
+    for n in removed[:50]:
+        print(f"   − {n}")
+    if (added or removed or changed) and not confirm(
+            "Изменения initramfs ожидаемы для этого обновления (новое ядро, микрокод, dracut)?"):
+        die("изменения initramfs не подтверждены — подпись отменена")
+    write_list(f"{REF}/initrd.sha256", new)
+    print("   эталон initramfs обновлён")
+
+
+def main():
+    if os.geteuid() != 0:
+        die("нужен root")
+    if len(sys.argv) >= 2 and sys.argv[1] == "--init":
+        init(sys.argv[2] if len(sys.argv) > 2 else None)
+    elif len(sys.argv) == 3:
+        verify(sys.argv[1], sys.argv[2])
+    else:
+        print(__doc__)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

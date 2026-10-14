@@ -1,0 +1,100 @@
+# void-hardened — конфигурация установщика.
+# Скопируйте в vh.conf и отредактируйте:  cp vh.conf.example vh.conf
+# Формат — shell: ИМЯ=значение, без пробелов вокруг «=».
+# Всё, что здесь не задано, берётся по умолчанию (значения ниже — и есть умолчания).
+
+# ---------------------------------------------------------------- диск
+# Целевой диск ЦЕЛИКОМ. Всё на нём будет уничтожено. Обязательный параметр.
+# Узнать имя: lsblk -d -o NAME,SIZE,MODEL   (обычно /dev/nvme0n1)
+VH_DISK=""
+# Размер ESP (раздел EFI, FAT32). В нём лежат Limine и 2 UKI по ~60-90 МБ.
+VH_ESP_SIZE="1G"
+# TRIM: yes — тому разрешён discard, раз в неделю fstrim (скорость и ресурс SSD);
+#       no  — без discard (по образу диска не видно, какие блоки заняты). См. docs/01.
+VH_TRIM="yes"
+# Argon2id для LUKS2: время одной попытки и память. Снижать — запрещённое «ускорение».
+VH_LUKS_ITER_MS="3000"
+VH_LUKS_MEM_KIB="1048576"
+
+# ---------------------------------------------------------------- система
+VH_HOSTNAME="void"
+VH_TIMEZONE="Europe/Ljubljana"
+VH_LOCALE="en_US.UTF-8"
+VH_KEYMAP="us"
+# Регуляторный домен Wi-Fi (ISO 3166): разрешённые каналы и мощность.
+VH_REGDOM="SI"
+# Зеркало Void (только HTTPS). Список: https://xmirror.voidlinux.org
+VH_MIRROR="https://repo-default.voidlinux.org"
+# Пакет ядра. Метапакет «linux» тянет прошивки AMD/NVIDIA — ставим серию напрямую.
+VH_KERNEL="linux6.18"
+
+# Учётные записи: админ (wheel, вход только на tty2) и повседневный (без wheel, tty1).
+VH_ADMIN="admin"
+VH_USER="user"
+# Системный пользователь, от имени которого работает браузер.
+VH_BROWSER_USER="browser"
+
+# ---------------------------------------------------------------- загрузка
+# Сжатие initramfs внутри UKI: zstd (меньше файл) или lz4 (быстрее распаковка).
+VH_INITRD_COMPRESS="zstd"
+# Сколько секунд Limine показывает меню (выбор предыдущего ядра). 0 — без меню.
+VH_LIMINE_TIMEOUT="1"
+# Дополнительные параметры ядра (например, «console=ttyS0,115200 console=tty0» для
+# последовательной консоли в VM). Попадают в подписанную UKI.
+VH_EXTRA_CMDLINE=""
+
+# ---------------------------------------------------------------- железо
+# igpu    — только Intel UHD; GTX 1650 обесточена (runtime PM), nouveau запрещён.
+# nouveau — dGPU доступна через nouveau/NVK (DRI_PRIME=1). Нужна, если HDMI
+#           разведён на NVIDIA (покажет install/00-probe.sh).
+VH_GPU="igpu"
+# Bluetooth: off — модули запрещены; optional — bluez стоит, но выключен,
+#            включается на время (vh-bluetooth on); on — работает всегда.
+VH_BLUETOOTH="optional"
+# Камера (uvcvideo): no — модуль запрещён; yes — разрешён.
+VH_CAMERA="no"
+# Картридер (rtsx): no — модуль запрещён.
+VH_CARDREADER="no"
+# Прошивки: yes — распаковываются только нужные этому ноутбуку (AX201, RTL8111, i915,
+# микрокод): −430 МБ на диске. Другое железо (USB Wi-Fi и т. п.) — допишите шаблон
+# в VH_FIRMWARE_KEEP, например "mediatek/* rtw88/*" (пути внутри /usr/lib/firmware).
+VH_FIRMWARE_TRIM="yes"
+VH_FIRMWARE_KEEP=""
+# KVM: no — kvm/kvm_intel запрещены (VT-x стоит выключить и в BIOS).
+VH_VIRT="no"
+# IPv6: no — выключен в ядре (ipv6.disable=1).
+VH_IPV6="no"
+
+# ---------------------------------------------------------------- сеть
+# Ethernet: dhcp — dhcpcd только на eth0; static — адрес ниже; off — не настраивать.
+VH_ETH="dhcp"
+VH_ETH_ADDR=""        # для static: 192.168.1.50/24
+VH_ETH_GW=""          # для static: 192.168.1.1
+# DoT-апстримы unbound: IP@853#имя-в-сертификате, через пробел.
+VH_DNS_UPSTREAMS="9.9.9.9@853#dns.quad9.net 149.112.112.112@853#dns.quad9.net 194.242.2.2@853#dns.mullvad.net"
+# NTS-серверы chrony.
+VH_NTS_SERVERS="time.cloudflare.com nts.netnod.se ptbtime1.ptb.de ntppool1.time.nl"
+
+# ---------------------------------------------------------------- память
+# zram: алгоритм (zstd плотнее, lz4 быстрее) и размер в % от RAM.
+VH_ZRAM_ALGO="zstd"
+VH_ZRAM_PERCENT="50"
+
+# ---------------------------------------------------------------- домашний каталог
+# /home с noexec: свои бинарники в $HOME не запускаются.
+VH_HOME_NOEXEC="yes"
+# Каталог внутри $HOME повседневного пользователя, где исполнение разрешено
+# (для разработки, например «dev» → /home/user/dev). Пусто — нет такого каталога.
+VH_DEV_DIR=""
+
+# ---------------------------------------------------------------- рабочий стол
+# netline — панель для mango. Собирается в live-среде компилятором Zig,
+# в установленную систему компилятор не попадает (см. docs/08).
+VH_NETLINE="yes"
+VH_NETLINE_REPO="https://github.com/FalconBinary/netline.git"
+VH_NETLINE_REF="lite"
+VH_ZIG_VERSION="0.16.0"
+
+# ---------------------------------------------------------------- только для VM-тестов
+# yes — вход админа на последовательной консоли ttyS0 (стенд tests/vm). На железе — no.
+VH_TEST_SERIAL="no"

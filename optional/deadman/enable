@@ -1,0 +1,67 @@
+#!/bin/bash
+# void-hardened: dead man's switch — стирание ключа LUKS из RAM (docs/13, deadman).
+#   doas /root/vh/optional/deadman/enable
+. "$(dirname "$0")/../lib.sh"
+MOR=/sys/firmware/efi/efivars/MemoryOverwriteRequestControl-e20939be-32d4-41be-a150-897f85d49829
+if [ -e "$MOR" ]; then ok "MOR поддерживается: перезагрузка через прошивку стирает RAM"
+else warn "MOR не найден: после стирания ключа — выключение (sysrq o), RAM прошивкой не стирается"; fi
+wd=no
+if [ -e /dev/watchdog ] && grep -qi tco /sys/class/watchdog/watchdog0/identity 2>/dev/null; then
+	if dmesg 2>/dev/null | grep -qi 'unable to reset NO_REBOOT'; then
+		warn "iTCO: прошивка заблокировала NO_REBOOT — аппаратный сторож недоступен"
+	else
+		wd=yes; ok "iTCO_wdt: аппаратный сторож есть — его «гладит» vh-deadman"
+	fi
+fi
+
+tag=""
+cat <<EOT
+
+Метка — USB-устройство, извлечение которого = тревожное выключение (без сохранения
+последних секунд работы). Например, маленькая флешка на шнурке, второй конец — у вас.
+Пусто — без метки (только комбинация клавиш и штатное выключение).
+EOT
+printf 'Вставьте метку и нажмите Enter (или введите «нет»): '
+read -r a
+if [ "$a" != нет ]; then
+	sleep 1
+	d=$(ls -td /sys/bus/usb/devices/[0-9]*-[0-9]* 2>/dev/null | grep -v : | head -1)
+	[ -n "$d" ] || die "USB-устройство не найдено"
+	tag="$(cat "$d/idVendor"):$(cat "$d/idProduct")"
+	echo "метка: $tag ($(cat "$d/manufacturer" 2>/dev/null) $(cat "$d/product" 2>/dev/null))"
+fi
+printf 'Тревожная комбинация Правый Ctrl + Правый Alt + End на встроенной клавиатуре? [y/N] '
+read -r a; combo=no; case $a in y|Y|д|Д) combo=yes ;; esac
+
+cat > /etc/vh/deadman.conf <<EOT
+# void-hardened: dead man's switch (optional/deadman, docs/13)
+# Метка: VID:PID USB-устройства (lsusb). Извлечение = тревожное выключение.
+TAG="$tag"
+# Правый Ctrl + Правый Alt + End на встроенной клавиатуре (i8042) — тревожное выключение
+COMBO=$combo
+# Аппаратный сторож iTCO: демон «гладит» его; гибель или зависание демона = сброс через
+# прошивку (MOR стирает RAM) — отказ в безопасную сторону
+WATCHDOG=$wd
+EOT
+install -m 0755 "$MOD_DIR/vh-deadman" /usr/local/sbin/vh-deadman
+install -m 0644 "$MOD_DIR/85-vh-deadman.sh" /etc/runit/shutdown.d/85-vh-deadman.sh
+rm -rf /etc/sv/vh-deadman; cp -r "$MOD_DIR/sv/vh-deadman" /etc/sv/vh-deadman
+rm -rf /usr/lib/dracut/modules.d/91vhdeadman; cp -r "$MOD_DIR/91vhdeadman" /usr/lib/dracut/modules.d/91vhdeadman
+echo 'add_dracutmodules+=" vhdeadman "' > /etc/dracut.conf.d/21-vh-deadman.conf
+if [ "$wd" = yes ]; then
+	echo 'options iTCO_wdt nowayout=1 heartbeat=60' > /etc/modprobe.d/vh-itco.conf
+	grep -qx iTCO_wdt /etc/vh/modules.preload 2>/dev/null || echo iTCO_wdt >> /etc/vh/modules.preload 2>/dev/null || true
+fi
+# простой: блокировка через 15 мин без физического ввода, выключение через 60 (vh-acpid)
+sed -i 's/^IDLE_LOCK_MIN=.*/IDLE_LOCK_MIN=15/; s/^IDLE_POWEROFF_MIN=.*/IDLE_POWEROFF_MIN=60/' /etc/vh/acpi.conf
+grep -q '^IDLE_LOCK_MIN=' /etc/vh/acpi.conf || printf 'IDLE_LOCK_MIN=15\nIDLE_POWEROFF_MIN=60\n' >> /etc/vh/acpi.conf
+sv restart vh-acpid >/dev/null 2>&1 || true
+/usr/local/sbin/vh-deadman test
+ln -sfn /etc/sv/vh-deadman /var/service/vh-deadman
+rebuild_uki
+mark_enabled
+cat <<EOT
+Работает: тревожное выключение (метка/комбинация), штатное выключение и перезагрузка
+заканчиваются стиранием ключа и RAM. Проверка — на стенде с дампом памяти (docs/13).
+Состояние метки: cat /run/vh/deadman
+EOT

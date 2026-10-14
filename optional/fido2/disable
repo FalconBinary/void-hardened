@@ -1,0 +1,10 @@
+#!/bin/bash
+# void-hardened: выключить FIDO2 — вернуть стеки PAM базового слоя.
+. "$(dirname "$0")/../lib.sh"
+for f in /etc/pam.d/system-login /etc/pam.d/doas /etc/pam.d/swaylock; do
+	if [ -e "$f.vh-orig" ]; then restore_orig "$f"
+	else install -m 0644 "$VH_ROOT/rootfs$f" "$f"; fi
+done
+rm -f /etc/udev/rules.d/97-vh-fido.rules
+mark_disabled
+echo "/etc/u2f_mappings оставлен (удалите сами, если ключи больше не нужны)."

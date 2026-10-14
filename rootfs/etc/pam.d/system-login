@@ -1,0 +1,27 @@
+#%PAM-1.0
+# void-hardened: вход на TTY (login). Отличия от pam-base:
+#  - pam_faillock: 5 неудачных попыток за 15 мин → блокировка на 10 мин (не навсегда:
+#    физический атакующий не должен запереть владельца). Настройки — security/faillock.conf.
+#  - стек auth расписан явно: с «include system-auth» модуль authfail сработал бы
+#    и после успешного пароля.
+#  - pam_access: каждому пользователю — только свой TTY (security/access.conf).
+
+auth       required   pam_shells.so
+auth       requisite  pam_nologin.so
+auth       required   pam_env.so
+auth       required   pam_faillock.so preauth
+auth       sufficient pam_unix.so     try_first_pass
+auth       [default=die] pam_faillock.so authfail
+
+account    required   pam_faillock.so
+account    required   pam_access.so
+account    required   pam_nologin.so
+account    include    system-auth
+
+password   include    system-auth
+
+session    optional   pam_loginuid.so
+session    include    system-auth
+session    optional   pam_motd.so          motd=/etc/motd
+-session   optional   pam_dumb_runtime_dir.so
+session    required   pam_env.so

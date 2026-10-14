@@ -1,0 +1,25 @@
+#!/bin/bash
+# void-hardened: строгий режим сети (docs/13, раздел strict-net).
+# У повседневного пользователя и админа нет сети и DNS; root ходит на зеркала xbps только
+# на время обновления; временные разрешения — vh-net (элементы set'ов с таймаутом).
+. "$(dirname "$0")/../lib.sh"
+say "строгий режим сети"
+install -m 0755 "$MOD_DIR/vh-net" /usr/local/sbin/vh-net
+save_orig /etc/vh/nft/people.nft
+save_orig /etc/vh/nft/lo-dns.nft
+render "$MOD_DIR/people.nft.in" /etc/vh/nft/people.nft
+render "$MOD_DIR/lo-dns.nft.in" /etc/vh/nft/lo-dns.nft
+if ! reload_nft; then
+	restore_orig /etc/vh/nft/people.nft
+	restore_orig /etc/vh/nft/lo-dns.nft
+	reload_nft
+	die "набор nftables не прошёл проверку — возвращён базовый"
+fi
+mark_enabled
+cat <<EOT
+Проверка:
+  от $VH_USER:   getent hosts voidlinux.org   → ошибка (и счётчик drop растёт)
+  от root:       doas vh-net status
+  обновление:    doas vh-update               (сам откроет зеркала на 30 мин)
+  временно сеть: doas vh-net allow $VH_ADMIN 10
+EOT

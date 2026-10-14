@@ -1,0 +1,67 @@
+# void-hardened: Firefox внутри песочницы bwrap (docs/08).
+# Профиль прикрепляется к /usr/lib/firefox/firefox по пути внутри песочницы.
+# attach_disconnected: объекты вне корня песочницы — «отсоединённые» пути.
+# Файловую видимость уже ограничивает bwrap; здесь — то, чего bwrap не умеет:
+# сетевые семейства, capability, монтирование, исполнение из записываемых мест.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile vh.firefox /usr/lib/firefox/firefox flags=(attach_disconnected) {
+  include <abstractions/base>
+
+  # --- файлы (внутри песочницы)
+  / r,
+  /** r,
+  /usr/lib/** mr,
+  /usr/lib/firefox/** mrix,
+  /home/*/ rw,
+  /home/*/** rwk,
+  /tmp/** rwk,
+  /dev/shm/** rwk,
+  /run/user/*/** rwk,
+  /dev/dri/* rw,
+  /dev/null rw,
+  /dev/zero rw,
+  /dev/urandom r,
+  /dev/random r,
+  /proc/** r,
+  /proc/*/oom_score_adj rw,
+  /sys/** r,
+  # исполнять и отображать как код — только файлы пакета и библиотек, никогда
+  # из записываемых мест (tmpfs bwrap монтируются без noexec — этот слой второй)
+  deny /tmp/** mx,
+  deny /dev/shm/** mx,
+  deny /home/** mx,
+  deny /run/** mx,
+  deny /usr/bin/** x,
+  deny /usr/libexec/** x,
+
+  # --- сеть: только inet и unix; netlink route — следить за сменой сети.
+  # AF_ALG (модули, загруженные для iwd), AF_PACKET и прочие — запрещены.
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network unix,
+  network netlink raw,
+  deny network alg,
+  deny network packet,
+  deny network bluetooth,
+  deny network key,
+  deny network vsock,
+  deny network xdp,
+  unix,
+
+  # --- без capability, монтирования и новых user namespace
+  deny capability,
+  deny mount,
+  deny umount,
+  deny pivot_root,
+  deny userns,
+
+  # --- процессы Firefox между собой
+  signal (send, receive) peer=vh.firefox,
+  ptrace (read, trace) peer=vh.firefox,
+
+  include if exists <local/vh.firefox>
+}

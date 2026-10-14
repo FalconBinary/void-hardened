@@ -1,0 +1,2 @@
+# Основной репозиторий. Тот же файл в /usr/share/xbps.d перекрывается этим (одинаковое имя).
+repository=@VH_MIRROR@/current

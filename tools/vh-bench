@@ -1,0 +1,102 @@
+#!/bin/sh
+# vh-bench — одинаковый набор замеров для этой системы и для CachyOS (docs/15).
+#   sh tools/vh-bench          — CPU, память, простой, загрузка
+#   sh tools/vh-bench --fio    — плюс накопитель (нужен fio; 2 ГБ во временном файле в $HOME)
+# Запускать от обычного пользователя, от сети, с закрытым браузером. Повторить 3 раза.
+# Нужны: zstd, python3 (есть и в Void, и в CachyOS). Ничего не устанавливает.
+set -u
+LC_ALL=C; export LC_ALL
+FIO=0; [ "${1:-}" = --fio ] && FIO=1
+if [ -z "${VH_BENCH_OUT:-}" ]; then
+	# весь вывод — и на экран, и в файл отчёта (POSIX sh: без «>(tee)»)
+	VH_BENCH_OUT=./vh-bench-$(uname -n)-$(date +%Y%m%d-%H%M%S).txt
+	export VH_BENCH_OUT
+	sh "$0" "$@" 2>&1 | tee "$VH_BENCH_OUT"
+	exit
+fi
+out=$VH_BENCH_OUT
+have() { command -v "$1" >/dev/null 2>&1; }
+sec() { printf '\n== %s\n' "$*"; }
+rd() { cat "$1" 2>/dev/null; }
+
+sec "Система"
+printf 'ядро:       %s\n' "$(uname -r)"
+printf 'дистрибутив: %s\n' "$(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-?}")"
+printf 'CPU:        %s\n' "$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)"
+printf 'cmdline:    %s\n' "$(rd /proc/cmdline | tr ' ' '\n' | grep -E '^(preempt|mitigations|init_on_free|iommu|intel_iommu)=' | paste -sd' ' -)"
+printf 'драйвер/EPP: %s / %s\n' "$(rd /sys/devices/system/cpu/cpufreq/policy0/scaling_driver)" \
+	"$(rd /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference)"
+printf 'питание:    %s\n' "$(for s in /sys/class/power_supply/*; do [ "$(rd "$s/type")" = Mains ] && rd "$s/online"; done | head -1 | sed 's/1/от сети/;s/0/от батареи/')"
+
+sec "Загрузка (с момента включения ядра)"
+printf 'uptime сейчас: %s с\n' "$(cut -d' ' -f1 /proc/uptime)"
+if [ -r /var/log/socklog/kernel/current ] || dmesg >/dev/null 2>&1; then
+	dmesg 2>/dev/null | grep -m1 -E 'runit: enter stage: /etc/runit/2|systemd\[1\]: Startup finished|Reached target.*Graphical' || true
+fi
+have systemd-analyze && systemd-analyze 2>/dev/null | head -2
+
+sec "Простой: память, процессы, пробуждения"
+awk '/MemTotal|MemAvailable|^Cached|SwapTotal|SwapFree/ {printf "%-14s %8.0f МиБ\n", $1, $2/1024}' /proc/meminfo
+used=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "%.0f", (t-a)/1024}' /proc/meminfo)
+echo "занято (Total−Available): $used МиБ"
+echo "процессов (с потоками ядра): $(ls -d /proc/[0-9]* | wc -l)"
+irq() { awk 'NR>1 {for (i=2; i<=NF && $i ~ /^[0-9]+$/; i++) s+=$i} END {print s}' /proc/interrupts; }
+echo "пробуждения: замер 30 с простоя (не трогайте мышь и клавиатуру)…"
+a=$(irq); sleep 30; b=$(irq)
+echo "прерываний в секунду: $(( (b - a) / 30 ))"
+
+sec "CPU и память: zstd (выше — лучше)"
+if have zstd; then
+	tmp=$(mktemp -d)
+	# корпус: исходники python stdlib — реальные тексты, одинаковые в обеих системах
+	py=$(python3 -c 'import sysconfig;print(sysconfig.get_paths()["stdlib"])' 2>/dev/null)
+	tar -cf "$tmp/corpus.tar" -C "$py" . 2>/dev/null
+	echo "корпус: $(du -m "$tmp/corpus.tar" | cut -f1) МиБ"
+	echo "-- многопоточно, уровень 3:"
+	zstd -b3 -e3 -T0 -i5 "$tmp/corpus.tar" 2>&1 | tail -1
+	echo "-- один поток, уровень 19:"
+	zstd -b19 -i3 "$tmp/corpus.tar" 2>&1 | tail -1
+	rm -rf "$tmp"
+else
+	echo "нет zstd"
+fi
+
+sec "Интерпретатор: python3 (меньше — лучше)"
+python3 -I - <<'PY'
+import time, json, re, hashlib
+def bench(name, f, n=5):
+    best = 1e9
+    for _ in range(n):
+        t = time.perf_counter(); f(); best = min(best, time.perf_counter() - t)
+    print(f"{name:12s} {best*1000:8.1f} мс")
+bench("циклы", lambda: sum(i * i for i in range(2_000_000)))
+data = [{"id": i, "name": f"item{i}", "tags": ["a", "b", "c"]} for i in range(50_000)]
+bench("json", lambda: json.loads(json.dumps(data)))
+text = "lorem ipsum dolor sit amet " * 40_000
+bench("regex", lambda: len(re.findall(r"\b\w+or\w*\b", text)))
+blob = b"x" * (64 << 20)
+bench("sha256", lambda: hashlib.sha256(blob).hexdigest())
+PY
+
+if [ "$FIO" = 1 ]; then
+	sec "Накопитель: fio (выше — лучше)"
+	if have fio; then
+		f=$HOME/.vh-bench-fio.tmp
+		fio --name=rand4k --filename="$f" --size=2G --rw=randread --bs=4k --iodepth=32 \
+			--ioengine=libaio --direct=1 --runtime=20 --time_based --group_reporting 2>/dev/null \
+			| grep -E 'IOPS=|lat \(usec\).*avg' | head -3
+		fio --name=seqread --filename="$f" --size=2G --rw=read --bs=1M --iodepth=8 \
+			--ioengine=libaio --direct=1 --runtime=15 --time_based 2>/dev/null | grep -E 'bw=' | head -1
+		rm -f "$f"
+	else
+		echo "нет fio"
+	fi
+fi
+
+sec "Температура и частота после замеров"
+for z in /sys/class/thermal/thermal_zone*; do
+	[ "$(rd "$z/type")" = x86_pkg_temp ] && echo "CPU: $(( $(rd "$z/temp") / 1000 )) °C"
+done
+awk '/MHz/ {s+=$4; n++} END {if (n) printf "средняя частота: %.0f МГц\n", s/n}' /proc/cpuinfo
+echo
+echo "Отчёт: $out"

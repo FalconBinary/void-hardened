@@ -1,0 +1,7 @@
+#%PAM-1.0
+# void-hardened: swaylock работает от пользователя и проверяет пароль через
+# SUID-помощник unix_chkpwd. pam_faillock здесь не используется: процесс без root
+# не может надёжно вести счётчик, а файл счётчика пользователя он сам и сбросит.
+# Вместо счётчика — задержка 2 с после каждой ошибки (docs/05).
+auth       required   pam_faildelay.so delay=2000000
+auth       required   pam_unix.so

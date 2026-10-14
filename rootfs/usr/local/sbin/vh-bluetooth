@@ -1,0 +1,20 @@
+#!/bin/sh
+# void-hardened: Bluetooth по требованию (VH_BLUETOOTH=optional, docs/06, docs/12).
+#   vh-bluetooth on   — снять rfkill, запустить bluetoothd
+#   vh-bluetooth off  — остановить bluetoothd, заблокировать радио
+# Вызывается через doas без пароля (только эти два аргумента).
+set -eu
+PATH=/usr/bin
+case ${1:-} in
+	on)
+		rfkill unblock bluetooth
+		[ -e /var/service/bluetoothd ] || ln -s /etc/sv/bluetoothd /var/service/
+		sv -w 5 up bluetoothd >/dev/null
+		echo on > /run/vh/bluetooth ;;
+	off)
+		[ -e /var/service/bluetoothd ] && sv -w 5 down bluetoothd >/dev/null
+		rm -f /var/service/bluetoothd
+		rfkill block bluetooth
+		echo off > /run/vh/bluetooth ;;
+	*) echo "использование: vh-bluetooth on|off" >&2; exit 2 ;;
+esac

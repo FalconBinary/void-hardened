@@ -1,0 +1,5 @@
+#!/bin/bash
+# void-hardened: убрать лаунчер просмотрщиков (пакеты остаются).
+. "$(dirname "$0")/../lib.sh"
+rm -f /usr/local/bin/vh-open /usr/local/libexec/vh/vh-seccomp
+mark_disabled

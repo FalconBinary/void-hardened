@@ -1,0 +1,47 @@
+# void-hardened: chronyd — время по NTS (docs/06).
+abi <abi/4.0>,
+include <tunables/global>
+
+profile vh.chronyd /usr/bin/chronyd {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+  include <abstractions/ssl_certs>
+
+  capability sys_time,
+  capability setuid,
+  capability setgid,
+  capability chown,
+  capability net_bind_service,
+  capability sys_resource,
+  capability sys_nice,
+  capability dac_override,
+
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network unix dgram,
+  deny network alg,
+  deny network packet,
+
+  /usr/bin/chronyd mr,
+  /etc/chrony.conf r,
+  /etc/gnutls/** r,
+  /usr/share/zoneinfo/** r,
+  /var/lib/chrony/ rw,
+  /var/lib/chrony/** rwk,
+  /run/chrony/ rw,
+  /run/chrony/** rwk,
+  /var/run/chrony/ rw,
+  /var/run/chrony/** rwk,
+  /dev/rtc* rw,
+  /dev/ptp* rw,
+  /sys/class/rtc/** r,
+  /sys/devices/** r,
+  /proc/** r,
+
+  deny userns,
+  deny mount,
+
+  include if exists <local/vh.chronyd>
+}

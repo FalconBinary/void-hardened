@@ -1,0 +1,3 @@
+# dhcpcd только для eth0, только IPv4 (настройки — /etc/dhcpcd.conf)
+nft list table inet vh >/dev/null 2>&1 || nft list table inet vh_failsafe >/dev/null 2>&1 || exit 1
+OPTS="-q -4"

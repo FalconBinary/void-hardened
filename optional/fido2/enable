@@ -1,0 +1,93 @@
+#!/bin/bash
+# void-hardened: второй фактор FIDO2 (pam-u2f) для входа, doas и swaylock (docs/13, fido2).
+#   doas /root/vh/optional/fido2/enable
+# Пароль И ключ (required; sufficient запрещён — ключ заменил бы пароль). PIN ключа — для
+# входа и doas (ключ, уехавший вместе с ноутбуком, без PIN бесполезен); для swaylock —
+# только касание, чтобы частая разблокировка оставалась быстрой.
+# Нужны ДВА ключа на каждого (основной и запасной): потеря единственного = вход только
+# через live-флешку. Перед включением держите открытым root-шелл на tty2 (doas -s).
+. "$(dirname "$0")/../lib.sh"
+ORIGIN=pam://void-hardened
+U2F="pam_u2f.so authfile=/etc/u2f_mappings cue origin=$ORIGIN appid=$ORIGIN"
+
+say "пакеты: pam-u2f (тянет libfido2)"
+xbps-install -Sy pam-u2f
+
+say "группа fido: доступ к hidraw только своих ключей (без elogind тег uaccess не работает)"
+getent group fido >/dev/null || groupadd -r fido
+usermod -aG fido "$VH_USER"
+usermod -aG fido "$VH_ADMIN"
+
+# Найти hidraw-устройства FIDO: в дескрипторе отчётов — usage page 0xF1D0 (байты 06 D0 F1)
+find_keys() {
+	for h in /sys/class/hidraw/hidraw*; do
+		[ -r "$h/device/report_descriptor" ] || continue
+		od -An -tx1 -v "$h/device/report_descriptor" | tr -d ' \n' | grep -q '06d0f1' || continue
+		usb=$(readlink -f "$h/device/../..")
+		echo "$(cat "$usb/idVendor") $(cat "$usb/idProduct") $(cat "$usb/serial" 2>/dev/null || echo -) ${h##*/}"
+	done
+}
+rules=/etc/udev/rules.d/97-vh-fido.rules
+echo "# void-hardened: hidraw своих FIDO2-ключей — группе fido (optional/fido2)" > "$rules.new"
+for who in "$VH_ADMIN" "$VH_USER"; do
+	for n in основной запасной; do
+		printf '\nВставьте %s ключ для %s и нажмите Enter… ' "$n" "$who"
+		read -r _
+		sleep 1
+		k=$(find_keys | head -1)
+		[ -n "$k" ] || die "FIDO-ключ не найден (udevadm monitor покажет, видит ли его ядро)"
+		set -- $k
+		grep -q "ATTRS{serial}==\"$3\"" "$rules.new" || printf '%s\n' \
+			"SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"$1\", ATTRS{idProduct}==\"$2\", ATTRS{serial}==\"$3\", GROUP=\"fido\", MODE=\"0660\"" >> "$rules.new"
+		chgrp fido "/dev/$4"; chmod 0660 "/dev/$4"
+		echo "Регистрация: введите PIN ключа и коснитесь его"
+		cred=$(setpriv --reuid="$who" --regid="$(id -g "$who")" --init-groups -- pamu2fcfg -n -N -o "$ORIGIN" -i "$ORIGIN") \
+			|| die "pamu2fcfg не зарегистрировал ключ"
+		if grep -q "^$who:" /etc/u2f_mappings 2>/dev/null; then
+			sed -i "s|^\($who:.*\)$|\1:$cred|" /etc/u2f_mappings
+		else
+			echo "$who:$cred" >> /etc/u2f_mappings
+		fi
+		echo "  выньте ключ"
+	done
+done
+mv "$rules.new" "$rules"
+chown root:root /etc/u2f_mappings; chmod 0644 /etc/u2f_mappings
+udevadm control --reload
+
+say "PAM: вход и doas — пароль И ключ с PIN; swaylock — пароль И касание"
+for f in /etc/pam.d/system-login /etc/pam.d/doas /etc/pam.d/swaylock; do save_orig "$f"; done
+python3 -I - "$U2F" <<'PY'
+import re, sys
+u2f = sys.argv[1]
+block = (
+    "auth       required                pam_faillock.so preauth\n"
+    "auth       [success=1 default=bad] pam_unix.so     try_first_pass\n"
+    "auth       [default=die]           pam_faillock.so authfail\n"
+    f"auth       [success=1 default=bad] {u2f} pinverification=1\n"
+    "auth       [default=die]           pam_faillock.so authfail\n"
+    "auth       required                pam_permit.so\n")
+for path in ("/etc/pam.d/system-login", "/etc/pam.d/doas"):
+    s = open(path).read()
+    new = re.sub(r"auth\s+required\s+pam_faillock\.so preauth\n"
+                 r"auth\s+sufficient\s+pam_unix\.so\s+try_first_pass\n"
+                 r"auth\s+\[default=die\]\s+pam_faillock\.so authfail\n", block, s)
+    if new == s:
+        sys.exit(f"{path}: не найден стек auth базового слоя — правьте вручную (docs/13)")
+    open(path, "w").write(new)
+s = open("/etc/pam.d/swaylock").read()
+if "pam_u2f.so" not in s:
+    s += f"# второй фактор: касание ключа без PIN (optional/fido2)\nauth       required   {u2f} pinverification=0\n"
+    open("/etc/pam.d/swaylock", "w").write(s)
+PY
+mark_enabled
+cat <<EOT
+
+ПРОВЕРЬТЕ, НЕ ЗАКРЫВАЯ ЭТОТ ШЕЛЛ:
+  1. на tty1 войдите как $VH_USER: пароль → PIN → касание;
+  2. ключ без пароля и пароль без ключа — отказ;
+  3. запасной ключ работает так же;
+  4. если что-то не так: doas /root/vh/optional/fido2/disable
+YubiKey: выключите OTP-интерфейс (он печатает как клавиатура):
+  xbps-install yubikey-manager && ykman config usb --disable OTP
+EOT

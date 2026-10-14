@@ -1,0 +1,8 @@
+# void-hardened: кто спрашивает локальный unbound — СТРОГИЙ режим (optional/strict-net).
+# Процесс без сети не вынесет данные DNS-запросами вида данные.атакующий.tld:
+# unbound переслал бы их апстриму, а ответ (TXT) вернул бы — двусторонний канал.
+meta skuid "@VH_BROWSER_USER@" ip daddr 127.0.0.1 meta l4proto { tcp, udp } th dport 53 accept
+# chrony: имена NTS-серверов (и имя NTP-сервера, которое может выдать NTS-KE)
+meta skuid "chrony" ip daddr 127.0.0.1 meta l4proto { tcp, udp } th dport 53 accept
+# временные разрешения: root на время обновления, люди — vh-net allow
+meta skuid @dns_tmp ip daddr 127.0.0.1 meta l4proto { tcp, udp } th dport 53 accept

@@ -1,0 +1,105 @@
+#!/bin/sh
+# void-hardened: песочница браузера (docs/08). Работает от пользователя браузера.
+#
+# Что видит Firefox внутри:
+#   /usr (только чтение), минимальный /etc, свой /proc (без счётчиков прерываний),
+#   свой /dev, /tmp и /dev/shm — каталоги на хостовом tmpfs с noexec,
+#   HOME — постоянный профиль (trusted) или пустой tmpfs (untrusted),
+#   ~/Downloads — общий с пользователем каталог /home/xfer (nosymfollow, noexec),
+#   Wayland — только через vh-wlfilter, звук — только сокет pipewire-pulse с
+#   ограниченными правами (без микрофона), GPU — только render node iGPU (trusted).
+# Не видит: файлов пользователя, D-Bus, IPC mango, основного сокета Wayland и PipeWire.
+set -eu
+PATH=/usr/bin
+mode=${1:?}
+uid=$(id -u) gid=$(id -g) user=$(id -un)
+ff=/usr/lib/firefox
+rt=/run/user/$uid
+h=/home/$user
+
+# Рабочие каталоги на хостовом /tmp (tmpfs, noexec): noexec, полученный из более
+# привилегированного namespace, в user namespace снять нельзя. Тот же путь
+# переиспользуется — после выхода из браузера здесь остаётся только мусор в RAM.
+work=/tmp/vh-browser/$mode
+rm -rf "$work"
+mkdir -p -m 0700 "/tmp/vh-browser" "$work"
+mkdir -m 0700 "$work/tmp" "$work/shm" "$work/run"
+printf '%s:x:%s:%s::%s:/usr/bin/nologin\n' "$user" "$uid" "$gid" "$h" > "$work/passwd"
+printf '%s:x:%s:\n' "$user" "$gid" > "$work/group"
+
+set -- \
+	--unshare-all --share-net --unshare-user --disable-userns --assert-userns-disabled \
+	--die-with-parent --new-session --cap-drop ALL --clearenv \
+	--ro-bind /usr /usr \
+	--symlink usr/bin /bin --symlink usr/bin /sbin \
+	--symlink usr/lib /lib --symlink usr/lib /lib64 \
+	--tmpfs "$ff"
+# Каталог Firefox собирается заново: файлы пакета + наш autoconfig (политики не
+# умеют запирать javascript.options.* и app.normandy.*). Потом — только чтение.
+for e in "$ff"/*; do
+	n=${e##*/}
+	[ "$n" = defaults ] && continue
+	set -- "$@" --ro-bind "$e" "$ff/$n"
+done
+set -- "$@" \
+	--ro-bind "$ff/defaults/pref/channel-prefs.js" "$ff/defaults/pref/channel-prefs.js" \
+	--ro-bind /etc/vh/firefox/autoconfig.js "$ff/defaults/pref/vh-autoconfig.js" \
+	--ro-bind "/etc/vh/firefox/vh-$mode.cfg" "$ff/vh.cfg" \
+	--remount-ro "$ff" \
+	--ro-bind /etc/fonts /etc/fonts \
+	--ro-bind /etc/ssl /etc/ssl \
+	--ro-bind /etc/resolv.conf /etc/resolv.conf \
+	--ro-bind /etc/hosts /etc/hosts \
+	--ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf \
+	--ro-bind /etc/localtime /etc/localtime \
+	--ro-bind-try /etc/ld.so.cache /etc/ld.so.cache \
+	--ro-bind "$work/passwd" /etc/passwd \
+	--ro-bind "$work/group" /etc/group \
+	--ro-bind "/etc/vh/firefox/policies-$mode.json" /etc/firefox/policies/policies.json \
+	--ro-bind-try /var/cache/fontconfig /var/cache/fontconfig \
+	--proc /proc \
+	--ro-bind /dev/null /proc/interrupts \
+	--ro-bind /dev/null /proc/softirqs \
+	--ro-bind /dev/null /proc/stat \
+	--dev /dev \
+	--bind "$work/tmp" /tmp \
+	--bind "$work/shm" /dev/shm \
+	--ro-bind /sys/devices/system/cpu /sys/devices/system/cpu \
+	--bind "$work/run" "$rt" \
+	--bind /run/vh-sandbox/wayland "$rt/wayland-0" \
+	--bind-try /run/vh-sandbox/pulse "$rt/pulse/native"
+
+if [ "$mode" = trusted ]; then
+	# постоянный профиль: логины, закладки; кэш — на tmpfs (политика)
+	mkdir -p -m 0700 "$HOME/trusted"
+	set -- "$@" --bind "$HOME/trusted" "$h"
+	# GPU: только render node iGPU (WebRender, VA-API), без card0 (KMS) — docs/08
+	for r in /sys/class/drm/renderD*; do
+		[ -e "$r" ] || continue
+		[ "$(basename "$(readlink -f "$r/device/driver")")" = i915 ] || continue
+		set -- "$@" --dev-bind "/dev/dri/${r##*/}" "/dev/dri/${r##*/}" \
+			--ro-bind /sys/dev/char /sys/dev/char \
+			--ro-bind /sys/class/drm /sys/class/drm \
+			--ro-bind /sys/devices/pci0000:00 /sys/devices/pci0000:00
+		break
+	done
+else
+	# одноразовый профиль: пустой HOME в RAM, без GPU (программный рендеринг)
+	mkdir -m 0700 "$work/home"
+	set -- "$@" --bind "$work/home" "$h"
+fi
+
+set -- "$@" \
+	--bind /home/xfer "$h/Downloads" \
+	--chdir "$h" \
+	--setenv HOME "$h" --setenv USER "$user" --setenv LOGNAME "$user" \
+	--setenv PATH /usr/bin --setenv LANG "${LANG:-C.UTF-8}" \
+	--setenv XDG_RUNTIME_DIR "$rt" --setenv WAYLAND_DISPLAY wayland-0 \
+	--setenv PULSE_SERVER "unix:$rt/pulse/native" \
+	--setenv MOZ_ENABLE_WAYLAND 1 --setenv MOZ_CRASHREPORTER_DISABLE 1 \
+	--setenv GDK_BACKEND wayland \
+	-- "$ff/firefox" --no-remote --profile "$h/profile"
+
+# профиль создаётся внутри HOME; каталог должен существовать
+if [ "$mode" = trusted ]; then mkdir -p -m 0700 "$HOME/trusted/profile"; else mkdir -m 0700 "$work/home/profile"; fi
+exec bwrap "$@"

@@ -1,0 +1,115 @@
+#!/usr/sbin/nft -f
+# void-hardened: единственный источник правил файрвола (docs/06-network.md).
+# Загружается в стадии 1 (core-services/06-vh-nftables.sh) одним вызовом nft -f.
+# В рантайме правила и цепочки не меняет ни один инструмент; меняются только
+# элементы set'ов (временные разрешения: «nft add element … timeout 10m»).
+
+flush ruleset
+
+table inet vh {
+	# DoT-апстримы unbound (из forward-addr в unbound.conf)
+	set dot_servers {
+		type ipv4_addr
+		elements = { @VH_DOT_IPS@ }
+	}
+	# Частные и служебные диапазоны: браузеру туда нельзя (защита LAN и DNS rebinding)
+	set private4 {
+		type ipv4_addr
+		flags interval
+		elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16,
+			     172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 }
+	}
+	# Исключения для браузера в LAN: адрес . порт (свой роутер, принтер).
+	# Пример: nft add element inet vh browser_lan { 192.168.1.1 . 443 }
+	set browser_lan {
+		type ipv4_addr . inet_service
+		flags timeout
+	}
+	# Порты localhost, к которым браузеру можно подключаться (разработка).
+	set browser_lo_ports {
+		type inet_service
+		flags timeout
+	}
+	# Временные разрешения строгого режима (optional/strict-net, команда vh-net):
+	# адреса зеркал xbps для root, UID с временной сетью и с временным DNS.
+	set root_https {
+		type ipv4_addr
+		flags timeout
+	}
+	set people_tmp {
+		typeof meta skuid
+		flags timeout
+	}
+	set dns_tmp {
+		typeof meta skuid
+		flags timeout
+	}
+
+	# Ранние отбрасывания — до conntrack, на любом интерфейсе.
+	# RFC1918, 100.64/10 и 169.254/16 — НЕ марсиане: в чужой сети это DHCP и шлюз.
+	chain raw_pre {
+		type filter hook prerouting priority raw; policy accept;
+		iif != "lo" ip saddr 127.0.0.0/8 drop
+		ip saddr { 0.0.0.0/8, 224.0.0.0/4, 240.0.0.0/4 } drop
+		tcp flags & (fin | syn) == (fin | syn) drop
+		tcp flags & (syn | rst) == (syn | rst) drop
+		tcp flags & (fin | syn | rst | psh | ack | urg) == 0x0 drop
+		tcp flags & (fin | psh | urg) == (fin | psh | urg) drop
+	}
+
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif "lo" accept
+		# redirect, ссылающийся на существующее соединение, conntrack считает related —
+		# поэтому он отбрасывается раньше правила ct.
+		icmp type redirect drop
+		ct state established,related accept
+		ct state invalid drop
+		udp sport 67 udp dport 68 accept
+		limit rate 6/minute log prefix "vh-in-drop: " level info
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+
+	chain output {
+		type filter hook output priority filter; policy drop;
+		ct state established,related accept
+		ct state invalid drop
+		oif "lo" jump out_lo
+		# DHCP (продление аренды iwd и dhcpcd идёт обычным UDP-сокетом)
+		udp sport 68 udp dport 67 accept
+		# DNS: наружу ходит только unbound и только по DoT к своим апстримам
+		meta skuid "_unbound" ip daddr @dot_servers tcp dport 853 accept
+		udp dport { 53, 853 } jump drop_log
+		tcp dport { 53, 853 } jump drop_log
+		# время: только chrony, NTS-KE (4460/tcp) и NTP (123/udp)
+		meta skuid "chrony" tcp dport 4460 accept
+		meta skuid "chrony" udp dport 123 accept
+		# браузер: веб, QUIC; LAN — только по списку исключений
+		meta skuid "@VH_BROWSER_USER@" ip daddr . tcp dport @browser_lan accept
+		meta skuid "@VH_BROWSER_USER@" ip daddr @private4 jump drop_log
+		meta skuid "@VH_BROWSER_USER@" tcp dport { 80, 443 } accept
+		meta skuid "@VH_BROWSER_USER@" udp dport 443 accept
+		# root (xbps) и люди: базовый слой — /etc/vh/nft/people.nft (сеть есть: git,
+		# ssh, ping); строгий режим подменяет файл (optional/strict-net, docs/13)
+		include "/etc/vh/nft/people.nft"
+		jump drop_log
+	}
+
+	chain out_lo {
+		# DNS к unbound: кому можно — /etc/vh/nft/lo-dns.nft (строгий режим сужает)
+		include "/etc/vh/nft/lo-dns.nft"
+		ip daddr 127.0.0.1 meta l4proto { tcp, udp } th dport 53 jump drop_log
+		# скомпрометированный браузер не достаёт локальные TCP-сервисы других UID
+		meta skuid "@VH_BROWSER_USER@" tcp dport @browser_lo_ports accept
+		meta skuid "@VH_BROWSER_USER@" jump drop_log
+		accept
+	}
+
+	chain drop_log {
+		limit rate 6/minute log prefix "vh-out-drop: " level info
+		drop
+	}
+}

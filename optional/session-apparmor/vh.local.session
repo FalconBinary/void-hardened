@@ -1,0 +1,72 @@
+# void-hardened: сеанс mango под AppArmor (optional/session-apparmor, docs/13).
+# Сам mango и всё, что он запускает, — в профилях; ограничения нацелены на то, что
+# процессы повседневного пользователя могут сделать против своего же сеанса:
+#   - IPC mango ($XDG_RUNTIME_DIR/mango-PID.sock) принимает «dispatch spawn» и меняет
+#     привязки — доступ только у панели netline и её меню (теги, выход из сеанса);
+#   - сокет seatd — только у mango: приложения не откроют seat и не получат ввод;
+#   - нет новых user namespace (класс эксплойтов ядра из своего userns), нет AF_ALG и
+#     AF_PACKET, нет capability даже у вернувшегося после обновления SUID-файла.
+# Переходы: doas и vh-open — Ux (свои root-лаунчеры с фиксированными аргументами;
+# окружение очищается), unix_chkpwd — в штатный профиль unix-chkpwd.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile vh.mango /usr/bin/mango flags=(attach_disconnected @VH_AA_MODE@) {
+  /** rwlkm,
+  unix,
+  signal,
+  network unix,
+  network netlink raw,
+  deny network inet,
+  deny network inet6,
+  deny network alg,
+  deny network packet,
+  deny userns,
+  deny capability,
+
+  /usr/local/bin/{netline,zbg,zwifi,zbt,zpower,zcal,zrun,zwall} Cx -> panel,
+  /usr/bin/** Cx -> apps,
+  /usr/libexec/** Cx -> apps,
+  /usr/local/bin/vh-* Cx -> apps,
+
+  profile panel flags=(attach_disconnected @VH_AA_MODE@) {
+    /** rwlkm,
+    unix,
+    signal,
+    network unix,
+    network netlink raw,
+    network bluetooth raw,
+    deny network inet,
+    deny network inet6,
+    deny network alg,
+    deny network packet,
+    deny userns,
+    deny capability,
+    /usr/local/bin/{netline,zbg,zwifi,zbt,zpower,zcal,zrun,zwall} ix,
+    /usr/bin/doas Ux,
+    /usr/bin/** Px -> vh.mango//apps,
+    /usr/libexec/** Px -> vh.mango//apps,
+    /usr/local/bin/vh-* Px -> vh.mango//apps,
+  }
+
+  profile apps flags=(attach_disconnected @VH_AA_MODE@) {
+    /** rwlkm,
+    /usr/** ix,
+    unix,
+    signal,
+    network unix,
+    network inet,
+    network inet6,
+    network netlink raw,
+    deny network alg,
+    deny network packet,
+    deny network bluetooth,
+    deny userns,
+    deny capability,
+    deny /run/user/*/mango-*.sock rw,
+    deny /run/seatd.sock rw,
+    /usr/bin/doas Ux,
+    /usr/bin/unix_chkpwd Px,
+    /usr/local/bin/vh-open Ux,
+  }
+}

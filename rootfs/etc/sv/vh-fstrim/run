@@ -1,0 +1,15 @@
+#!/bin/sh
+# void-hardened: TRIM раз в неделю без cron и snooze (docs/11).
+# Метка времени — на диске, так что срок соблюдается и через перезагрузки.
+exec 2>&1
+PATH=/usr/bin
+stamp=/var/lib/vh/fstrim.last
+mkdir -p /var/lib/vh
+while :; do
+	now=$(date +%s)
+	last=$(cat "$stamp" 2>/dev/null || echo 0)
+	if [ $((now - last)) -ge 604800 ]; then
+		ionice -c3 fstrim -v / && echo "$now" > "$stamp"
+	fi
+	sleep 3600
+done

@@ -1,0 +1,9 @@
+#!/bin/bash
+# void-hardened: снять профиль сеанса mango.
+. "$(dirname "$0")/../lib.sh"
+if [ -e /etc/apparmor.d/vh.local.session ]; then
+	apparmor_parser --remove /etc/apparmor.d/vh.local.session 2>/dev/null || true
+	rm -f /etc/apparmor.d/vh.local.session
+fi
+mark_disabled
+echo "Действует для следующего сеанса mango."

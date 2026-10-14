@@ -1,0 +1,147 @@
+#!/bin/sh
+# void-hardened: чек-лист с ожидаемыми значениями (docs/10-audit.md).
+#   doas vh-audit         — все проверки
+# Каждая строка: [ ok ] / [FAIL] / [ ?? ] (не удалось проверить) — что и почему.
+set -u
+PATH=/usr/bin
+[ "$(id -u)" = 0 ] || { echo "запустите: doas vh-audit" >&2; exit 1; }
+. /etc/vh/vh.env
+pass=0 fail=0 unk=0
+ok()   { pass=$((pass+1)); printf '[ ok ] %s\n' "$*"; }
+bad()  { fail=$((fail+1)); printf '[FAIL] %s\n' "$*"; }
+unk()  { unk=$((unk+1));  printf '[ ?? ] %s\n' "$*"; }
+chk()  { if [ "$2" = "$3" ]; then ok "$1 = $3"; else bad "$1 = $2 (ожидалось $3)"; fi; }
+sec()  { printf '\n== %s\n' "$*"; }
+
+sec "Загрузка и ядро"
+cmd=$(cat /proc/cmdline)
+for p in lockdown=confidentiality module.sig_enforce=1 lsm=landlock,lockdown,yama,apparmor \
+	intel_iommu=on iommu.strict=1 init_on_free=1 rd.shell=0 rd.emergency=poweroff panic=10; do
+	case " $cmd " in *" $p "*) ok "cmdline: $p" ;; *) bad "cmdline: нет $p" ;; esac
+done
+chk lockdown "$(cat /sys/kernel/security/lockdown)" "none integrity [confidentiality]"
+lsm=$(cat /sys/kernel/security/lsm)
+case ",$lsm," in *,bpf,*) bad "LSM: bpf включён ($lsm)" ;; *) ok "LSM: $lsm" ;; esac
+case ",$lsm," in *,apparmor,*) ok "AppArmor активен" ;; *) bad "AppArmor не активен" ;; esac
+chk kernel.panic "$(cat /proc/sys/kernel/panic)" 10
+sb=$(od -An -t u1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-* 2>/dev/null | tr -d ' ')
+[ "$sb" = 1 ] && ok "Secure Boot включён" || bad "Secure Boot выключен (этап 2: 20-firstboot.sh)"
+if [ -e /etc/vh/modlock.enabled ]; then
+	chk kernel.modules_disabled "$(cat /proc/sys/kernel/modules_disabled)" 1
+else
+	unk "блокировка модулей не включена (этап 3: 30-lock.sh)"
+fi
+for m in fuse overlay; do
+	grep -q "^$m " /proc/modules && bad "загружен модуль $m" || ok "модуль $m не загружен"
+done
+grep -q . /sys/kernel/security/apparmor/profiles 2>/dev/null && \
+	ok "профили AppArmor: $(wc -l < /sys/kernel/security/apparmor/profiles)" || unk "профилей AppArmor нет"
+
+sec "sysctl (значения из /etc/sysctl.d/*vh*.conf)"
+for f in /etc/sysctl.d/*vh*.conf; do
+	grep -E '^[a-z]' "$f" | sed 's/[[:space:]]*#.*//' | while IFS='=' read -r k v; do
+		k=$(echo "$k" | tr -d ' \t'); v=$(echo "$v" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -s ' \t' ' ')
+		cur=$(sysctl -n "$k" 2>/dev/null | tr -s ' \t' ' ') || { echo "[ ?? ] $k: нет такого ключа"; continue; }
+		[ "$cur" = "$v" ] && echo "[ ok ] $k = $v" || echo "[FAIL] $k = $cur (ожидалось $v)"
+	done
+done | tee /tmp/vh-audit-sysctl.$$ | grep -v '^\[ ok \]'
+n_ok=$(grep -c '^\[ ok \]' /tmp/vh-audit-sysctl.$$); n_bad=$(grep -c '^\[FAIL\]' /tmp/vh-audit-sysctl.$$)
+pass=$((pass + n_ok)); fail=$((fail + n_bad)); rm -f /tmp/vh-audit-sysctl.$$
+echo "       sysctl: совпало $n_ok"
+
+sec "Монтирование"
+mopt() { findmnt -no OPTIONS "$1" 2>/dev/null; }
+has() { case ",$(mopt "$1")," in *",$2,"*) ok "$1: $2" ;; *) bad "$1: нет $2 ($(mopt "$1"))" ;; esac; }
+has /proc hidepid=invisible
+for m in /tmp /var/tmp /dev/shm; do has "$m" noexec; has "$m" nosuid; has "$m" nodev; done
+has /run noexec
+has /home nodev; has /home nosuid
+has /home/xfer nosymfollow; has /home/xfer noexec
+has /var/lib/vh-browser noexec
+findmnt /boot/efi >/dev/null && unk "ESP смонтирован (должен — только на время обновления)" || ok "ESP не смонтирован"
+
+sec "SUID, capabilities, права устройств"
+suid=$(find / -xdev \( -perm -4000 -o -perm -2000 \) -type f 2>/dev/null | sort | paste -sd' ' -)
+chk "SUID/SGID" "$suid" "/usr/bin/doas /usr/bin/unix_chkpwd"
+caps=$(getcap -r /usr 2>/dev/null)
+[ -z "$caps" ] && ok "file capabilities: нет" || bad "file capabilities: $caps"
+for d in /dev/dri/renderD*; do
+	[ -e "$d" ] && chk "$d" "$(stat -c '%a %U:%G' "$d")" "660 root:render"
+done
+for d in /dev/rfkill /dev/tpm0 /dev/tpmrm0 /dev/watchdog; do
+	[ -e "$d" ] && chk "$d" "$(stat -c '%a %U' "$d")" "600 root"
+done
+for c in gcc cc clang make tcc; do
+	command -v "$c" >/dev/null && bad "компилятор в системе: $c"
+done
+ok "компиляторов C нет (as/ld из binutils — зависимость dracut-uefi, docs/02)"
+for c in crond snooze acpid polkitd udisksd avahi-daemon cupsd NetworkManager sshd; do
+	command -v "$c" >/dev/null && bad "лишний демон: $c"
+done
+
+sec "Пользователи"
+for u in "$VH_ADMIN" "$VH_USER"; do
+	case $(getent shadow "$u" | cut -d: -f2) in
+		'$y$'*) ok "$u: пароль yescrypt" ;;
+		*) bad "$u: пароль не yescrypt" ;;
+	esac
+done
+grep -q '^root:!' /etc/shadow && ok "root заблокирован" || bad "у root есть пароль"
+id -nG "$VH_USER" | grep -qw wheel && bad "$VH_USER в wheel" || ok "$VH_USER не в wheel"
+for g in input video kvm; do id -nG "$VH_USER" | grep -qw "$g" && bad "$VH_USER в группе $g"; done
+doas -C /etc/doas.conf >/dev/null 2>&1 && ok "doas.conf синтаксически верен" || bad "doas.conf с ошибкой"
+
+sec "Сервисы"
+for sv in dbus iwd unbound chronyd seatd socklog-unix nanoklogd vh-acpid; do
+	sv status "$sv" 2>/dev/null | grep -q '^run:' && ok "сервис $sv работает" || bad "сервис $sv не работает"
+done
+for sv in sshd acpid dhcpcd wpa_supplicant cronie snooze-daily; do
+	[ -e "/var/service/$sv" ] && bad "лишний сервис включён: $sv"
+done
+running=$(ls /var/service | wc -l)
+ok "включено сервисов: $running ($(ls /var/service | paste -sd' ' -))"
+if [ -d /etc/vh/optional ] && [ -n "$(ls /etc/vh/optional 2>/dev/null)" ]; then
+	ok "параноидальные модули: $(ls /etc/vh/optional | paste -sd' ' -)"
+fi
+
+sec "Сеть"
+nft list table inet vh >/dev/null 2>&1 && ok "nftables: таблица vh" || bad "nftables: нет таблицы vh"
+listen=$(ss -Htulpn 2>/dev/null | awk '{print $1" "$5}' | sort -u | paste -sd';' -)
+case $listen in
+	"tcp 127.0.0.1:53;udp 127.0.0.1:53"|"udp 127.0.0.1:53;tcp 127.0.0.1:53") ok "слушает только unbound на 127.0.0.1:53" ;;
+	*) bad "открытые порты: $listen" ;;
+esac
+grep -q '^nameserver 127.0.0.1$' /etc/resolv.conf && ok "resolv.conf → 127.0.0.1" || bad "resolv.conf изменён"
+for i in all default eth0 wlan0; do
+	[ -d "/proc/sys/net/ipv4/conf/$i" ] || continue
+	for k in accept_redirects secure_redirects send_redirects; do
+		chk "$i.$k" "$(cat /proc/sys/net/ipv4/conf/$i/$k)" 0
+	done
+done
+if [ -d /sys/class/net/wlan0 ]; then
+	chk "Wi-Fi power_save" "$(iw dev wlan0 get power_save 2>/dev/null | awk '{print $3}')" off
+fi
+getent hosts voidlinux.org >/dev/null && ok "DNS (unbound, DoT) отвечает" || unk "DNS не отвечает (нет сети?)"
+chronyc -n authdata 2>/dev/null | awk 'NR>2 && $2=="NTS" {n++} END {exit !(n>0)}' \
+	&& ok "chrony: источники с NTS" || unk "chrony: нет NTS-источников (нет сети?)"
+
+sec "Производительность"
+[ -e /etc/xbps.d/40-vh-firmware.conf ] && ok "прошивки: только нужные ($(du -sm /usr/lib/firmware 2>/dev/null | cut -f1) МБ)" \
+	|| unk "прошивки: распакованы все ($(du -sm /usr/lib/firmware 2>/dev/null | cut -f1) МБ)"
+chk "THP defrag" "$(sed 's/.*\[\(.*\)\].*/\1/' /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null)" "defer+madvise"
+swapon --noheadings --show=NAME 2>/dev/null | grep -q zram && ok "zram активен" || bad "zram не активен"
+for q in /sys/block/nvme*/queue/scheduler; do
+	[ -e "$q" ] && chk "${q%/queue/scheduler}" "$(sed 's/.*\[\(.*\)\].*/\1/' "$q")" none
+done
+st=$(cat /run/vh/power 2>/dev/null || echo ?)
+epp=$(cat /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference 2>/dev/null || echo нет)
+case $st:$epp in ac:balance_performance|battery:balance_power) ok "EPP $epp ($st)" ;; *) unk "EPP $epp при питании $st" ;; esac
+if [ "$VH_GPU" = igpu ]; then
+	for d in /sys/bus/pci/devices/*; do
+		[ "$(cat "$d/vendor")" = 0x10de ] || continue
+		chk "dGPU ${d##*/} runtime" "$(cat "$d/power/runtime_status")" suspended
+	done
+fi
+
+printf '\nИтог: ok %d, FAIL %d, не проверено %d\n' "$pass" "$fail" "$unk"
+[ "$fail" = 0 ]

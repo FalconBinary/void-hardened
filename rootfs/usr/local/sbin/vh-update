@@ -1,0 +1,88 @@
+#!/bin/sh
+# void-hardened: обновление системы одной командой (docs/09).
+#   doas vh-update
+# 1. показывает, что обновится; 2. ставит; 3. хуки ядра пересобирают и подписывают
+# UKI и Limine; 4. если обновились микрокод, прошивки, dracut, stub или limine —
+# пересобирает UKI сам (их хуки этого не делают); 5. снимает вернувшиеся SUID;
+# 6. обновляет сертификаты для unbound; 7. показывает, что надо перезапустить.
+# С ключами на отдельном носителе (optional/sb-offline-keys): пакеты скачиваются с
+# сетью, а ставятся и подписываются без сети, пока носитель подключён.
+set -eu
+PATH=/usr/bin
+[ "$(id -u)" = 0 ] || { echo "запустите: doas vh-update" >&2; exit 1; }
+. /etc/vh/vh.env
+offline=0
+grep -q '^KEYS_OFFLINE=yes' /etc/vh/boot.conf 2>/dev/null && offline=1
+
+# строгий режим сети (optional/strict-net): root открывает зеркала только на время
+[ -e /etc/vh/optional/strict-net ] && /usr/local/sbin/vh-net xbps 30
+echo "==> синхронизация репозиториев и список обновлений"
+xbps-install -S >/dev/null
+updates=$(xbps-install -un 2>/dev/null | awk '{print $1}')
+if [ -z "$updates" ]; then
+	echo "обновлений нет"
+	exit 0
+fi
+echo "$updates" | sed 's/^/  /'
+
+rebuild=0 kver_updated=0
+for p in $updates; do
+	case ${p%-*} in
+		intel-ucode|linux-firmware*|wireless-regdb|dracut|dracut-uefi|systemd-boot-efistub|cryptsetup|tpm2-totp|tpm2-tools|limine|sbctl|eudev|kmod) rebuild=1 ;;
+	esac
+done
+echo "$updates" | grep -q "^$VH_KERNEL-" && kver_updated=1
+[ "$kver_updated" = 1 ] && echo "  новое ядро: запишите для сверки при перезагрузке — $(echo "$updates" | grep "^$VH_KERNEL-")"
+printf 'Продолжить? [y/N] '
+read -r a
+case $a in y|Y|д|Д) ;; *) exit 1 ;; esac
+
+if [ "$offline" = 1 ] && [ $((rebuild + kver_updated)) -gt 0 ]; then
+	echo "==> скачивание пакетов в кэш (сеть ещё есть)"
+	xbps-install -yuD xbps
+	xbps-install -yuD
+	printf 'Вставьте носитель с ключами Secure Boot и нажмите Enter… '
+	read -r _
+	/usr/local/sbin/vh-keys mount
+	trap '/usr/local/sbin/vh-keys umount' EXIT INT TERM
+fi
+
+echo "==> установка"
+xbps-install -yu xbps
+xbps-install -yu
+if [ "$rebuild" = 1 ] && [ "$kver_updated" = 0 ]; then
+	echo "==> обновились компоненты initramfs/загрузчика — пересборка UKI"
+	xbps-reconfigure -f "$VH_KERNEL"
+fi
+if [ "$offline" = 1 ] && [ $((rebuild + kver_updated)) -gt 0 ]; then
+	trap - EXIT INT TERM
+	/usr/local/sbin/vh-keys umount
+fi
+
+echo "==> SUID и capabilities"
+/usr/local/sbin/vh-suid-strip
+
+if echo "$updates" | grep -q '^ca-certificates-'; then
+	echo "==> сертификаты для DoT (unbound)"
+	if [ -e /etc/vh/optional/dns-pin ]; then
+		echo "  пиннинг включён: системные УЦ не копируются (смена УЦ — docs/09, раздел 6)"
+	else
+		install -m 0644 /etc/ssl/certs/ca-certificates.crt /etc/unbound/ca-bundle.pem
+		sv restart unbound
+	fi
+fi
+
+echo "==> старые ядра"
+command -v vkpurge >/dev/null && vkpurge list | sed 's/^/  можно удалить: /'
+
+echo "==> процессы со старыми библиотеками (перезапустите их или перезагрузитесь)"
+for m in /proc/[0-9]*/maps; do
+	grep -q ' (deleted)$' "$m" 2>/dev/null || continue
+	pid=${m#/proc/}; pid=${pid%/maps}
+	printf '  %s %s\n' "$pid" "$(tr '\0' ' ' < /proc/$pid/cmdline | cut -c1-60)"
+done | sort -k2 -u
+if [ "$kver_updated" = 1 ]; then
+	echo "==> новое ядро: перезагрузитесь сразу и не оставляйте ноутбук без присмотра до этого"
+	[ -e /etc/vh/optional/tpm2-totp ] && echo "    при загрузке код TOTP один раз не совпадёт — это ожидаемо (docs/13, tpm2-totp)"
+fi
+exit 0

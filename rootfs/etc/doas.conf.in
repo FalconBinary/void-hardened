@@ -1,0 +1,16 @@
+# void-hardened: opendoas (docs/05, docs/12). Права 0400 root:root.
+# Проверка синтаксиса: doas -C /etc/doas.conf
+#
+# Админ: любые команды, пароль каждый раз (без persist — нет «окна», когда
+# любой процесс админа повышает права без пароля).
+permit :wheel
+#
+# Повседневный пользователь — только узкие действия. «args» без значений
+# запрещает любые аргументы; с значением — ровно этот аргумент. Путь к команде
+# должен совпадать буквально (вызывать с полным путём).
+permit nopass @VH_USER@ as root cmd /usr/local/sbin/vh-browser args trusted
+permit nopass @VH_USER@ as root cmd /usr/local/sbin/vh-browser args untrusted
+permit nopass @VH_USER@ as root cmd /usr/bin/poweroff args
+permit nopass @VH_USER@ as root cmd /usr/bin/reboot args
+permit nopass @VH_USER@ as root cmd /usr/local/sbin/vh-bluetooth args on
+permit nopass @VH_USER@ as root cmd /usr/local/sbin/vh-bluetooth args off

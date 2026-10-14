@@ -1,0 +1,47 @@
+#!/bin/sh
+# void-hardened: носитель с ключами Secure Boot (optional/sb-offline-keys, docs/13).
+#   doas vh-keys mount    — выключить сеть, открыть LUKS носителя, подключить ключи
+#   doas vh-keys umount   — отключить ключи, закрыть носитель, вернуть сеть
+#   doas vh-keys status
+# Пока ключ db подключён, сети нет: удалённый атакующий не успеет им воспользоваться.
+set -eu
+PATH=/usr/bin
+[ "$(id -u)" = 0 ] || { echo "запустите: doas vh-keys …" >&2; exit 1; }
+. /etc/vh/keys.conf          # KEYS_UUID — UUID раздела LUKS на носителе
+MNT=/run/vh-keys KEYS=/var/lib/sbctl/keys NET=/run/vh-keys.net
+
+case ${1:-} in
+	mount)
+		mountpoint -q "$KEYS" && { echo "ключи уже подключены"; exit 0; }
+		dev=/dev/disk/by-uuid/$KEYS_UUID
+		[ -b "$dev" ] || { echo "носитель $KEYS_UUID не найден — вставьте его" >&2; exit 1; }
+		# сеть: запомнить и выключить
+		{
+			rfkill list wlan 2>/dev/null | grep -q 'Soft blocked: yes' && echo wlan=blocked || echo wlan=on
+			[ -d /sys/class/net/eth0 ] && grep -q up /sys/class/net/eth0/operstate && echo eth0=up || echo eth0=down
+		} > "$NET"
+		rfkill block all
+		[ -d /sys/class/net/eth0 ] && ip link set eth0 down
+		echo "сеть выключена"
+		cryptsetup open "$dev" vh-keys
+		install -d -m 0700 "$MNT"
+		mount -o nosuid,nodev,noexec /dev/mapper/vh-keys "$MNT"
+		mount --bind "$MNT/sbctl" "$KEYS"
+		echo "ключи подключены: $KEYS (эталоны проверки UKI: $MNT/ref)" ;;
+	umount)
+		sync
+		mountpoint -q "$KEYS" && umount "$KEYS"
+		mountpoint -q "$MNT" && umount "$MNT"
+		[ -e /dev/mapper/vh-keys ] && cryptsetup close vh-keys
+		if [ -e "$NET" ]; then
+			grep -q wlan=on "$NET" && rfkill unblock wlan
+			grep -q eth0=up "$NET" && ip link set eth0 up
+			rm -f "$NET"
+		else
+			rfkill unblock wlan
+		fi
+		echo "ключи отключены, носитель можно вынуть; сеть возвращена" ;;
+	status)
+		if mountpoint -q "$KEYS"; then echo "ключи подключены (сеть выключена)"; else echo "ключи не подключены"; fi ;;
+	*) sed -n '3,5p' "$0" | sed 's/^# //' >&2; exit 2 ;;
+esac

@@ -1,0 +1,8 @@
+#!/bin/bash
+# void-hardened: выключить пиннинг — вернуть системное хранилище УЦ (копию) для DoT и NTS.
+. "$(dirname "$0")/../lib.sh"
+sed -i 's|^\([[:space:]]*tls-cert-bundle:\).*|\1 "/etc/unbound/ca-bundle.pem"|' /etc/unbound/unbound.conf
+sed -i '/^# пиннинг УЦ NTS (optional\/dns-pin)/d; /^ntstrustedcerts /d; /^nosystemcert$/d' /etc/chrony.conf
+rm -f /etc/unbound/unbound.conf.vh-orig /etc/chrony.conf.vh-orig
+sv restart unbound chronyd >/dev/null
+mark_disabled

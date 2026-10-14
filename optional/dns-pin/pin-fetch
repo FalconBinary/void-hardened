@@ -1,0 +1,31 @@
+#!/usr/bin/python3 -I
+"""Корневой сертификат УЦ сервера TLS — для пиннинга (optional/dns-pin, docs/13).
+
+  pin-fetch АДРЕС ПОРТ ИМЯ [ALPN]   → PEM корня цепочки на stdout, сводка на stderr
+
+Цепочка проверяется системным хранилищем УЦ и именем сервера; в пин берётся её корень
+(якорь доверия): смена промежуточного сертификата у провайдера пин не ломает, а любой
+другой из ~150 корневых УЦ перестаёт подходить. Запускается от пользователя сервиса
+(_unbound, chrony), которому файрвол и так разрешает этот порт.
+"""
+import hashlib
+import socket
+import ssl
+import sys
+
+addr, port, name = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+alpn = sys.argv[4] if len(sys.argv) > 4 else None
+ctx = ssl.create_default_context(cafile="/etc/ssl/certs/ca-certificates.crt")
+ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+if alpn:
+    ctx.set_alpn_protocols([alpn])
+with socket.create_connection((addr, port), timeout=15) as raw:
+    with ctx.wrap_socket(raw, server_hostname=name) as s:
+        chain = s.get_verified_chain()      # python ≥ 3.13
+ders = [c if isinstance(c, bytes) else c.public_bytes(ssl._ssl.ENCODING_DER) for c in chain]
+root = ders[-1]
+pem = ssl.DER_cert_to_PEM_cert(root)
+sha = hashlib.sha256(root).hexdigest().upper()
+print(f"{name} ({addr}:{port}): цепочка {len(ders)} серт., корень SHA256 "
+      + ":".join(sha[i:i + 2] for i in range(0, len(sha), 2)), file=sys.stderr)
+sys.stdout.write(pem)

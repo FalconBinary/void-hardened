@@ -1,0 +1,4 @@
+#!/bin/sh
+# Хук ядра (после 20-initramfs): подписать новую UKI, пересобрать limine.conf
+# с хэшами BLAKE2B, вписать хэш конфига в Limine и подписать Limine (docs/03).
+exec /usr/local/sbin/vh-limine-update --new "$2"

@@ -1,0 +1,17 @@
+#!/bin/sh
+# void-hardened: внести свой FIDO2-ключ в список авторизуемых (optional/usb-auth).
+#   doas vh-usb-allow-key      — ключ должен быть вставлен напрямую (не через хаб) в тот
+#                                порт, где вы будете им пользоваться
+# Привязка: точный порт + VID:PID + serial + ровно один интерфейс HID без boot-протокола.
+# VID:PID и serial подделываются — главное здесь порт и запрет клавиатурного интерфейса.
+set -eu
+PATH=/usr/bin
+[ "$(id -u)" = 0 ] || exit 1
+for d in /sys/bus/usb/devices/[0-9]*-[0-9]*; do
+	case ${d##*/} in *:*) continue ;; esac
+	[ "$(cat "$d/authorized")" = 0 ] || continue
+	line="${d##*/} $(cat "$d/idVendor"):$(cat "$d/idProduct") $(cat "$d/serial" 2>/dev/null || echo -)"
+	printf 'найдено: %s  «%s %s»\nдобавить? [y/N] ' "$line" "$(cat "$d/manufacturer" 2>/dev/null)" "$(cat "$d/product" 2>/dev/null)"
+	read -r a
+	case $a in y|Y|д|Д) echo "$line" >> /etc/vh/usb-keys.conf; echo "добавлено; выньте и вставьте ключ" ;; esac
+done

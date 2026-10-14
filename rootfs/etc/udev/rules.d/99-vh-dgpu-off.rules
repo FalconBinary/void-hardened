@@ -1,0 +1,9 @@
+# void-hardened, VH_GPU=igpu: GTX 1650 без драйвера. Разрешаем runtime PM, чтобы
+# корневой порт PCIe перевёл её в D3cold (питание снято): без этого dGPU стоит в D0,
+# тратит ~5-8 Вт и греет ноутбук (docs/04). HDMI-аудио функцию dGPU удаляем:
+# её держит snd_hda_intel, и dGPU не засыпает.
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x030000", ATTR{power/control}="auto"
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x030200", ATTR{power/control}="auto"
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x040300", ATTR{remove}="1"
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x0c0330", ATTR{remove}="1"
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x0c8000", ATTR{remove}="1"

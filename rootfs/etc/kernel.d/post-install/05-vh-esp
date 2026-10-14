@@ -1,0 +1,8 @@
+#!/bin/sh
+# Хук ядра: смонтировать ESP до того, как dracut-uefi (20-initramfs) запишет UKI.
+# ESP в fstab — noauto: без этого хука UKI молча легла бы на корневую ФС
+# (boot/efi — обычный каталог), а загрузчик продолжил бы грузить старое ядро.
+# Аргументы xbps: $1 — пакет, $2 — версия ядра.
+mountpoint -q /boot/efi && exit 0
+mount /boot/efi || { echo "vh: не удалось смонтировать ESP (/boot/efi)" >&2; exit 1; }
+: > /run/vh-esp-by-hook

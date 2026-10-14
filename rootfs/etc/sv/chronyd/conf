@@ -1,0 +1,2 @@
+# void-hardened: chronyd с собственным фильтром seccomp (-F 1, man chronyd).
+OPTS="-F 1"

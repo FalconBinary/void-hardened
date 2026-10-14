@@ -1,0 +1,217 @@
+#!/usr/bin/python3 -I
+"""vh-acpid — крышка и кнопка питания без acpid и без suspend (docs/05, docs/12).
+
+Читает только два встроенных устройства ввода ACPI: «Lid Switch» (PNP0C0D) и
+«Power Button» (LNXPWRBN / PNP0C0C). USB-клавиатуры и виртуальные устройства
+(uinput) не слушает — их события сюда не попадают.
+
+  крышка закрыта          → блокировка экрана повседневного пользователя (swaylock);
+  закрыта дольше LID_MIN  → штатное выключение (suspend запрещён: ключ LUKS в RAM,
+                            а работающий ноутбук в сумке перегревается);
+  внешний монитор подключён → крышка ничего не делает (работа с закрытой крышкой);
+  кнопка питания          → POWER_KEY: poweroff (по умолчанию) | lock | ignore;
+  простой (IDLE_*_MIN > 0) → блокировка и штатное выключение по времени без ФИЗИЧЕСКОГО
+                            ввода: учитываются только встроенные клавиатура (i8042) и
+                            тачпад (I2C-HID/PS2). idle-inhibit браузера, USB-устройства и
+                            uinput сеанс не продлевают; захват устройства (EVIOCGRAB) =
+                            нет ввода = выключение — отказ в безопасную сторону.
+                            По умолчанию выключено; включает optional/deadman.
+
+Штатное выключение — /usr/bin/poweroff: стадия 3 runit останавливает сервисы,
+сбрасывает данные и размонтирует ФС. Длинное нажатие кнопки (4 с) — аппаратное
+выключение, мимо этого демона.
+
+Настройки — /etc/vh/acpi.conf. Ожидание — блокирующий select(): в простое ни
+одного пробуждения.
+"""
+import fcntl
+import glob
+import os
+import select
+import struct
+import subprocess
+import sys
+import time
+
+CONF = "/etc/vh/acpi.conf"
+ENV = "/etc/vh/vh.env"
+EV_KEY, EV_SW = 0x01, 0x05
+KEY_POWER, SW_LID = 116, 0x00
+EVENT = struct.Struct("llHHi")          # struct input_event на x86_64: 24 байта
+EVIOCGSW = (2 << 30) | (8 << 16) | (ord("E") << 8) | 0x1B   # _IOR('E', 0x1b, 8 байт)
+
+
+def log(msg):
+    print(f"vh-acpid: {msg}", flush=True)
+
+
+def read_kv(path, defaults):
+    out = dict(defaults)
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    out[k.strip()] = v.strip().strip('"')
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def sysfs(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def find_devices(internal_extra=()):
+    """Пути /dev/input/eventN: крышка и кнопка питания (только ACPI) и встроенные
+    устройства ввода для сторожа простоя (i8042, I2C-HID и явно указанные пути sysfs)."""
+    lid = power = None
+    builtin = []
+    for ev in sorted(glob.glob("/sys/class/input/event*")):
+        name = sysfs(f"{ev}/device/name")
+        phys = sysfs(f"{ev}/device/phys")
+        real = os.path.realpath(f"{ev}/device")
+        node = "/dev/input/" + os.path.basename(ev)
+        if name == "Lid Switch" and phys.startswith("PNP0C0D/"):
+            lid = lid or node
+        elif name == "Power Button" and phys.split("/")[0] in ("LNXPWRBN", "PNP0C0C"):
+            power = power or node
+        elif "/virtual/" in real:
+            continue                                    # uinput и т. п. — не физический ввод
+        elif phys.startswith("isa0060/serio") or ("/i2c-" in real and "/usb" not in real) \
+                or any(x and x in real for x in internal_extra):
+            builtin.append(node)
+    return lid, power, builtin
+
+
+def lid_closed(fd):
+    buf = bytearray(8)
+    try:
+        fcntl.ioctl(fd, EVIOCGSW, buf)
+    except OSError:
+        return False
+    return bool(buf[0] & (1 << SW_LID))
+
+
+def external_display():
+    """Подключён ли внешний монитор (работа с закрытой крышкой)."""
+    for st in glob.glob("/sys/class/drm/card*-*/status"):
+        conn = st.split("/")[-2]
+        if "-eDP-" in conn or "-LVDS-" in conn or "-DSI-" in conn:
+            continue
+        if sysfs(st) == "connected":
+            return True
+    return False
+
+
+def lock_session(user):
+    """swaylock в сеансе пользователя: его UID, GID и группы, чистое окружение."""
+    try:
+        import pwd
+        pw = pwd.getpwnam(user)
+    except KeyError:
+        return
+    rt = f"/run/user/{pw.pw_uid}"
+    socks = [s for s in sorted(glob.glob(f"{rt}/wayland-*"))
+             if not s.endswith(".lock") and os.path.exists(s)]
+    if not socks:
+        return                      # сеанс не запущен: блокировать нечего
+    env = ["env", "-i", "PATH=/usr/bin", f"HOME={pw.pw_dir}", f"XDG_RUNTIME_DIR={rt}",
+           f"WAYLAND_DISPLAY={os.path.basename(socks[0])}"]
+    cmd = ["/usr/bin/setpriv", f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}",
+           "--init-groups", "--reset-env", "--no-new-privs", "--"] + env + ["swaylock", "-f"]
+    try:
+        # swaylock -f сам уходит в фон, когда экран заблокирован
+        subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"swaylock не запустился: {e}")
+
+
+def poweroff(reason):
+    log(f"штатное выключение: {reason}")
+    os.execv("/usr/bin/poweroff", ["poweroff"])
+
+
+def main():
+    conf = read_kv(CONF, {"LID_MIN": "10", "POWER_KEY": "poweroff", "IDLE_LOCK_MIN": "0",
+                          "IDLE_POWEROFF_MIN": "0", "INTERNAL_INPUT": ""})
+    user = read_kv(ENV, {}).get("VH_USER", "")
+    lid_min = max(1, int(conf["LID_MIN"]))
+    power_key = conf["POWER_KEY"]
+    idle_lock = int(conf["IDLE_LOCK_MIN"]) * 60
+    idle_off = int(conf["IDLE_POWEROFF_MIN"]) * 60
+    lid_dev, power_dev, builtin = find_devices(conf["INTERNAL_INPUT"].split())
+    if not (idle_lock or idle_off):
+        builtin = []
+    if not lid_dev and not power_dev and not builtin:
+        log("нет ни крышки, ни кнопки питания ACPI — выходим (стационарный ПК или VM?)")
+        os.execv("/usr/bin/pause", ["pause"])   # runit не перезапускает нас каждую секунду
+    fds = {}
+    for dev, kind in [(lid_dev, "lid"), (power_dev, "power")] + [(b, "input") for b in builtin]:
+        if dev:
+            fds[os.open(dev, os.O_RDONLY | os.O_CLOEXEC)] = kind
+            log(f"{kind}: {dev}")
+    lid_fd = next((fd for fd, k in fds.items() if k == "lid"), None)
+    closed_since = time.monotonic() if lid_fd is not None and lid_closed(lid_fd) else None
+    last_input = time.monotonic()
+    idle_locked = False
+
+    while True:
+        now = time.monotonic()
+        deadlines = []
+        if closed_since is not None:
+            deadlines.append(closed_since + lid_min * 60)
+        if builtin and idle_lock and not idle_locked:
+            deadlines.append(last_input + idle_lock)
+        if builtin and idle_off:
+            deadlines.append(last_input + idle_off)
+        timeout = max(0.0, min(deadlines) - now) if deadlines else None
+        ready, _, _ = select.select(list(fds), [], [], timeout)
+        if not ready:
+            now = time.monotonic()
+            if builtin and idle_off and now >= last_input + idle_off:
+                poweroff(f"нет физического ввода {idle_off // 60} мин")
+            if builtin and idle_lock and not idle_locked and now >= last_input + idle_lock:
+                idle_locked = True
+                lock_session(user)
+            if closed_since is not None and now >= closed_since + lid_min * 60:
+                if external_display():
+                    closed_since = None         # подключили монитор, пока крышка закрыта
+                    continue
+                poweroff(f"крышка закрыта дольше {lid_min} мин")
+            continue
+        for fd in ready:
+            data = os.read(fd, EVENT.size * 64)
+            if fds[fd] == "input":
+                last_input = time.monotonic()   # содержимое не разбирается — только факт
+                idle_locked = False
+                continue
+            for off in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _s, _us, etype, code, value = EVENT.unpack_from(data, off)
+                if fds[fd] == "lid" and etype == EV_SW and code == SW_LID:
+                    if value == 1:
+                        if external_display():
+                            log("крышка закрыта, внешний монитор — ничего не делаем")
+                            continue
+                        closed_since = time.monotonic()
+                        lock_session(user)
+                    else:
+                        closed_since = None
+                elif fds[fd] == "power" and etype == EV_KEY and code == KEY_POWER and value == 1:
+                    if power_key == "poweroff":
+                        poweroff("кнопка питания")
+                    elif power_key == "lock":
+                        lock_session(user)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)

@@ -1,0 +1,9 @@
+#!/bin/bash
+# void-hardened: выключить авторизацию USB.
+. "$(dirname "$0")/../lib.sh"
+rm -f /etc/udev/rules.d/98-vh-usb-auth.rules
+sed -i '/optional\/usb-auth/d; /vh-usb args /d' /etc/doas.conf
+cmdline_del usbcore.authorized_default=2
+rebuild_uki
+mark_disabled
+echo "Действует после перезагрузки."

@@ -1,0 +1,75 @@
+#!/bin/sh
+# void-hardened: флешки без админа и без BadUSB (optional/usb-auth, docs/12, docs/13).
+#   doas vh-usb attach    — последнее вставленное внешнее устройство: авторизовать
+#                           ТОЛЬКО интерфейсы накопителя и смонтировать vfat/exfat
+#                           в /media/<пользователь> (nodev,nosuid,noexec,nosymfollow)
+#   doas vh-usb detach    — sync, отмонтировать, деавторизовать — можно вынимать
+#   doas vh-usb list      — внешние устройства и их состояние
+# Вызывается через doas без пароля, аргументы — только эти три слова (doas.conf).
+set -eu
+PATH=/usr/bin
+[ "$(id -u)" = 0 ] || { echo "запустите: doas vh-usb …" >&2; exit 1; }
+. /etc/vh/vh.env
+u=${DOAS_USER:-$VH_USER}
+[ "$u" = "$VH_USER" ] || [ "$u" = "$VH_ADMIN" ] || u=$VH_USER
+uid=$(id -u "$u") gid=$(id -g "$u")
+media=/media/$u att=/run/vh/usb-attach
+
+external() { # внешние USB-устройства (не корневые хабы, порт не hardwired)
+	for d in /sys/bus/usb/devices/[0-9]*-[0-9]*; do
+		case ${d##*/} in *:*) continue ;; esac
+		[ "$(cat "$d/port/connect_type" 2>/dev/null)" = hardwired ] && continue
+		echo "$d"
+	done
+}
+desc() { echo "$(cat "$1/idVendor"):$(cat "$1/idProduct") $(cat "$1/manufacturer" 2>/dev/null) $(cat "$1/product" 2>/dev/null)"; }
+
+case ${1:-} in
+	list)
+		for d in $(external); do
+			printf '%-8s authorized=%s  %s\n' "${d##*/}" "$(cat "$d/authorized")" "$(desc "$d")"
+		done ;;
+	attach)
+		mountpoint -q "$media" && { echo "уже смонтировано: $media"; exit 0; }
+		dev=""
+		for d in $(external); do [ "$(cat "$d/authorized")" = 0 ] && dev=$d; done
+		[ -n "$dev" ] || { echo "нет неавторизованных внешних устройств — вставьте флешку" >&2; exit 1; }
+		port=${dev##*/}
+		echo "подключаю $port: $(desc "$dev") — только интерфейсы класса 08 (накопитель)"
+		install -d -m 0755 "$att"
+		: > "$att/$port"
+		echo 1 > "$dev/authorized"
+		# ждём блочное устройство (usb-storage/uas и udev — до 10 с)
+		part=""
+		for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+			for b in /sys/block/sd*; do
+				[ -e "$b" ] || continue
+				case $(readlink -f "$b/device") in "$(readlink -f "$dev")"/*) ;; *) continue ;; esac
+				for p in "$b"/"${b##*/}"[0-9]* "$b"; do
+					t=$(blkid -o value -s TYPE "/dev/${p##*/}" 2>/dev/null || true)
+					case $t in vfat|exfat) part=/dev/${p##*/}; break 2 ;; esac
+				done
+			done
+			[ -n "$part" ] && break
+			sleep 0.5
+		done
+		[ -n "$part" ] || { echo "на устройстве нет раздела vfat/exfat (другие ФС — только админ)" >&2; echo 0 > "$dev/authorized"; rm -f "$att/$port"; exit 1; }
+		install -d -m 0700 -o "$uid" -g "$gid" "$media"
+		t=$(blkid -o value -s TYPE "$part")
+		mount -t "$t" -o nodev,nosuid,noexec,nosymfollow,uid="$uid",gid="$gid",fmask=0077,dmask=0077 "$part" "$media"
+		echo "смонтировано: $part ($t) → $media" ;;
+	detach)
+		if mountpoint -q "$media"; then
+			sync
+			umount "$media"
+			rmdir "$media" 2>/dev/null || true
+		fi
+		for f in "$att"/*; do
+			[ -e "$f" ] || continue
+			d=/sys/bus/usb/devices/${f##*/}
+			[ -e "$d/authorized" ] && echo 0 > "$d/authorized"
+			rm -f "$f"
+		done
+		echo "можно вынимать" ;;
+	*) sed -n '3,8p' "$0" | sed 's/^# //' >&2; exit 2 ;;
+esac

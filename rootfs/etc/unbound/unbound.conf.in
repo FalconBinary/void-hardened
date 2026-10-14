@@ -1,0 +1,81 @@
+# void-hardened: локальный резолвер — кэш, DNSSEC, апстримы только по DoT (docs/06, docs/07).
+server:
+	# --- кто и откуда спрашивает
+	interface: 127.0.0.1
+	port: 53
+	access-control: 127.0.0.0/8 allow
+	do-ip4: yes
+	do-ip6: no
+	do-udp: yes
+	do-tcp: yes
+	num-threads: 1
+	# --- права: после старта unbound работает от _unbound в chroot
+	username: "_unbound"
+	chroot: "/etc/unbound"
+	directory: "/etc/unbound"
+	pidfile: ""
+	use-syslog: no
+	logfile: ""
+	verbosity: 1
+	# --- меньше сведений о себе
+	hide-identity: yes
+	hide-version: yes
+	hide-trustanchor: yes
+	# --- DNSSEC: корневой ключ из пакета dnssec-anchors, обновление по RFC 5011.
+	# Ключ лежит в отдельном каталоге var/, доступном _unbound на запись: сам
+	# /etc/unbound (с unbound.conf) остаётся за root.
+	auto-trust-anchor-file: "/etc/unbound/var/root.key"
+	val-permissive-mode: no
+	val-clean-additional: yes
+	aggressive-nsec: yes
+	# --- защита от подмены
+	harden-glue: yes
+	harden-dnssec-stripped: yes
+	harden-referral-path: yes
+	harden-algo-downgrade: yes
+	harden-below-nxdomain: yes
+	harden-large-queries: yes
+	harden-short-bufsize: yes
+	harden-unknown-additional: yes
+	unwanted-reply-threshold: 10000000
+	deny-any: yes
+	minimal-responses: yes
+	qname-minimisation: yes
+	# --- DNS rebinding: адреса LAN и loopback в ответах из интернета вырезаются
+	private-address: 0.0.0.0/8
+	private-address: 10.0.0.0/8
+	private-address: 100.64.0.0/10
+	private-address: 127.0.0.0/8
+	private-address: 169.254.0.0/16
+	private-address: 172.16.0.0/12
+	private-address: 192.168.0.0/16
+	private-address: ::1/128
+	private-address: ::ffff:0:0/96
+	private-address: fc00::/7
+	private-address: fe80::/10
+	# --- Firefox не включит DoH сам (канареечный домен)
+	local-zone: "use-application-dns.net." always_nxdomain
+	# --- DoT: проверка сертификата апстрима по имени после «#»
+	tls-cert-bundle: "/etc/unbound/ca-bundle.pem"
+	tls-use-sni: yes
+	tcp-reuse-timeout: 60000
+	max-reuse-tcp-queries: 200
+	fast-server-permil: 900
+	fast-server-num: 2
+	# --- скорость: кэш, упреждение, отдача устаревшего при недоступности апстрима
+	msg-cache-size: 16m
+	rrset-cache-size: 32m
+	prefetch: yes
+	prefetch-key: yes
+	serve-expired: yes
+	serve-expired-ttl: 86400
+	serve-expired-client-timeout: 1800
+	edns-buffer-size: 1232
+
+forward-zone:
+	name: "."
+	forward-tls-upstream: yes
+@VH_UNBOUND_FORWARDS@
+
+remote-control:
+	control-enable: no

@@ -1,0 +1,12 @@
+#!/bin/bash
+# void-hardened: какие параноидальные модули включены (docs/13).
+. "$(dirname "$0")/../install/lib.sh"
+for d in "$(dirname "$0")"/*/; do
+	m=$(basename "$d")
+	[ -x "$d/enable" ] || continue
+	if [ -e "/etc/vh/optional/$m" ]; then
+		printf '  [вкл]  %-18s с %s\n' "$m" "$(cat "/etc/vh/optional/$m")"
+	else
+		printf '  [   ]  %s\n' "$m"
+	fi
+done

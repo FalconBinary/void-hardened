@@ -1,0 +1,51 @@
+#!/bin/bash
+# void-hardened: пиннинг УЦ для DoT (unbound) и NTS (chrony) — docs/13, раздел dns-pin.
+# Вместо ~150 корневых УЦ системного хранилища — только корни выбранных провайдеров.
+# Отказ закрытый: при смене УЦ у провайдера DNS/время перестанут работать, пока админ
+# не обновит пин (тот же скрипт) со сверкой отпечатков по второму каналу.
+. "$(dirname "$0")/../lib.sh"
+FETCH=/usr/local/libexec/vh/pin-fetch
+install -m 0755 "$MOD_DIR/pin-fetch" "$FETCH"
+as() { local u=$1; shift; setpriv --reuid="$u" --regid="$u" --clear-groups --no-new-privs -- "$@"; }
+
+say "DoT: корни УЦ апстримов unbound (подключение от _unbound на 853)"
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+chmod 0755 "$tmp"
+for u in $(sed -n 's/^[[:space:]]*forward-addr:[[:space:]]*\([^[:space:]]*\).*/\1/p' /etc/unbound/unbound.conf); do
+	ip=${u%%@*} name=${u##*#}
+	as _unbound python3 -I "$FETCH" "$ip" 853 "$name" > "$tmp/dot-$ip.pem" || die "не получить цепочку $u"
+done
+cat "$tmp"/dot-*.pem | awk '/BEGIN/{c=$0; next} {c=c"\n"$0} /END/{if(!seen[c]++) print c}' > "$tmp/dot.pem"
+
+say "NTS: корни УЦ серверов chrony (подключение от chrony на 4460)"
+for s in $(awk '$1 == "server" && / nts/ {print $2}' /etc/chrony.conf); do
+	as chrony python3 -I "$FETCH" "$s" 4460 "$s" ntske/1 > "$tmp/nts-$s.pem" || die "не получить цепочку $s"
+done
+cat "$tmp"/nts-*.pem | awk '/BEGIN/{c=$0; next} {c=c"\n"$0} /END/{if(!seen[c]++) print c}' > "$tmp/nts.pem"
+
+cat <<EOT
+
+Выше — отпечатки SHA256 корневых сертификатов. Сверьте их по второму каналу, НЕ через
+эту сеть: с другого устройства и другой сети откройте сертификат сервера (браузер →
+замок → «подробнее», или crt.sh) и сравните отпечаток корня. Подмена здесь = MITM навсегда.
+EOT
+confirm_exact pin "Записать пин для unbound и chrony?"
+
+install -m 0644 "$tmp/dot.pem" /etc/unbound/ca-pin.pem
+save_orig /etc/unbound/unbound.conf
+sed -i 's|^\([[:space:]]*tls-cert-bundle:\).*|\1 "/etc/unbound/ca-pin.pem"|' /etc/unbound/unbound.conf
+unbound-checkconf /etc/unbound/unbound.conf >/dev/null || { restore_orig /etc/unbound/unbound.conf; die "unbound.conf с ошибкой"; }
+
+install -d -m 0755 /etc/chrony
+install -m 0644 "$tmp/nts.pem" /etc/chrony/nts-pin.pem
+save_orig /etc/chrony.conf
+grep -q '^ntstrustedcerts ' /etc/chrony.conf || printf '%s\n' \
+	"# пиннинг УЦ NTS (optional/dns-pin): только эти корни, системное хранилище не используется" \
+	"ntstrustedcerts /etc/chrony/nts-pin.pem" "nosystemcert" >> /etc/chrony.conf
+
+sv restart unbound chronyd >/dev/null
+sleep 3
+if getent hosts voidlinux.org >/dev/null; then ok "DNS через DoT с пином работает"
+else warn "DNS не отвечает с пином — проверьте: doas svlogtail daemon | grep unbound"; fi
+mark_enabled
+echo "Проверка отказа: временно впишите в forward-addr чужое имя после «#» — резолв должен падать."

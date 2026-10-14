@@ -1,0 +1,2 @@
+# nonfree — только ради intel-ucode (микрокод CPU закрыт, но без него не закрыты уязвимости CPU).
+repository=@VH_MIRROR@/current/nonfree

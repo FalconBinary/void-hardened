@@ -1,0 +1,375 @@
+#!/usr/bin/python3 -I
+"""vh-wlfilter — фильтрующий Wayland-прокси для песочниц (docs/08-isolation.md).
+
+В mango нет протокола security-context-v1: любой клиент основного сокета видит
+screencopy, data-control (буфер обмена), virtual-keyboard, input-method,
+layer-shell и т. п. Этот прокси слушает отдельный сокет для песочниц и
+показывает клиенту только разрешённые глобальные объекты (белый список —
+строже чёрного списка security-context). Кроме того он:
+  * не даёт привязать скрытый объект, угадав его номер (соединение рвётся);
+  * помечает окна песочницы: app_id «vh-sandbox.…», заголовок «[песочница] …» —
+    подделать это клиент не может, правила mango опираются на app_id;
+  * отбрасывает запросы на полноэкранный режим (поддельный экран блокировки).
+
+Запускается в сеансе повседневного пользователя (exec-once в mango).
+Сокет: /run/vh-sandbox/wayland (каталог user:browser 0750, сокет 0660).
+"""
+import array
+import errno
+import os
+import selectors
+import signal
+import socket
+import struct
+import sys
+
+LISTEN = "/run/vh-sandbox/wayland"
+MAX_FDS = 28          # столько fd libwayland передаёт за один sendmsg
+MAX_MSG = 4096        # предел размера сообщения в libwayland
+HIGH_WATER = 1 << 20  # перестаём читать источник, если очередь получателя больше
+
+# Белый список глобальных объектов. Всё прочее клиент песочницы просто не видит.
+ALLOWED = {
+    "wl_compositor", "wl_subcompositor", "wl_shm", "wl_seat", "wl_output",
+    "wl_data_device_manager",          # копирование/вставка (буфер отдаётся окну в фокусе)
+    "wl_drm",                          # устаревший путь mesa к render node
+    "xdg_wm_base", "zxdg_decoration_manager_v1", "org_kde_kwin_server_decoration_manager",
+    "zxdg_output_manager_v1",
+    "zwp_linux_dmabuf_v1", "wp_linux_drm_syncobj_manager_v1",
+    "wp_viewporter", "wp_fractional_scale_manager_v1", "wp_presentation",
+    "wp_single_pixel_buffer_manager_v1", "wp_cursor_shape_manager_v1",
+    "wp_color_manager_v1", "wp_color_representation_manager_v1",
+    "wp_content_type_manager_v1", "wp_tearing_control_manager_v1", "wp_alpha_modifier_v1",
+    "wp_fifo_manager_v1", "wp_commit_timing_manager_v1",
+    "zwp_pointer_gestures_v1", "zwp_relative_pointer_manager_v1",
+    "zwp_pointer_constraints_v1", "zwp_tablet_manager_v2",
+    "zwp_text_input_manager_v3",       # ввод через IME в поля браузера (не input-method!)
+    "zwp_idle_inhibit_manager_v1",     # видео не даёт экрану гаснуть (docs/05 — цена)
+}
+# Для справки — что скрывается (неполный список, скрывается ВСЁ вне ALLOWED):
+# zwlr_screencopy_manager_v1, ext_image_copy_capture_manager_v1, zwlr_export_dmabuf_manager_v1,
+# zwlr_data_control_manager_v1, ext_data_control_manager_v1, zwp_primary_selection_device_manager_v1,
+# zwp_virtual_keyboard_manager_v1, zwlr_virtual_pointer_manager_v1, zwp_input_method_manager_v2,
+# zwlr_layer_shell_v1, ext_session_lock_manager_v1, zwlr_foreign_toplevel_manager_v1,
+# ext_foreign_toplevel_list_v1, zwlr_gamma_control_manager_v1, zwlr_output_power_manager_v1,
+# zwlr_output_manager_v1, wp_drm_lease_device_v1, zwp_keyboard_shortcuts_inhibit_manager_v1,
+# ext_idle_notifier_v1, xdg_activation_v1, zxdg_exporter_v2, ext_workspace_manager_v1.
+
+TITLE_PREFIX = "[песочница] "
+APPID_PREFIX = "vh-sandbox"
+
+# коды запросов и событий (wayland.xml, xdg-shell.xml)
+WL_DISPLAY_GET_REGISTRY = 1
+WL_DISPLAY_DELETE_ID = 1          # событие
+WL_REGISTRY_BIND = 0
+WL_REGISTRY_GLOBAL = 0            # событие
+WL_REGISTRY_GLOBAL_REMOVE = 1     # событие
+XDG_WM_BASE_GET_XDG_SURFACE = 2
+XDG_SURFACE_GET_TOPLEVEL = 1
+XDG_TOPLEVEL_SET_TITLE = 2
+XDG_TOPLEVEL_SET_APP_ID = 3
+XDG_TOPLEVEL_SET_FULLSCREEN = 11
+
+
+class ProtocolError(Exception):
+    pass
+
+
+def log(msg):
+    print(f"vh-wlfilter: {msg}", file=sys.stderr, flush=True)
+
+
+def get_string(buf, off):
+    (n,) = struct.unpack_from("<I", buf, off)
+    if n == 0 or off + 4 + n > len(buf):
+        raise ProtocolError("плохая строка")
+    s = bytes(buf[off + 4:off + 4 + n - 1])
+    return s, off + 4 + ((n + 3) & ~3)
+
+
+def put_string(s):
+    raw = s + b"\0"
+    pad = (4 - len(raw) % 4) % 4
+    return struct.pack("<I", len(raw)) + raw + b"\0" * pad
+
+
+def message(obj, opcode, payload):
+    size = 8 + len(payload)
+    if size > MAX_MSG:
+        raise ProtocolError("сообщение слишком длинное")
+    return struct.pack("<II", obj, (size << 16) | opcode) + payload
+
+
+def clean(s, limit):
+    """Только печатные символы: app_id и заголовок не должны ломать правила mango."""
+    t = s.decode("utf-8", "replace")
+    t = "".join(ch for ch in t if ch.isprintable())
+    return t[:limit].encode()
+
+
+class Side:
+    """Одно направление: сокет, входной буфер, очередь на отправку."""
+
+    def __init__(self, sock):
+        self.sock = sock
+        self.inbuf = bytearray()
+        self.fds = []          # fd, полученные и ещё не отправленные дальше
+        self.out = []          # [(bytes, [fd...])]
+        self.out_bytes = 0
+
+
+class Conn:
+    def __init__(self, proxy, client):
+        self.proxy = proxy
+        up = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
+        up.connect(proxy.upstream)
+        client.setblocking(False)
+        up.setblocking(False)
+        self.c = Side(client)
+        self.s = Side(up)
+        self.registries = set()
+        self.names = {}        # номер глобала → интерфейс (только разрешённые)
+        self.wm_bases = set()
+        self.xdg_surfaces = set()
+        self.toplevels = set()
+        self.closed = False
+
+    # --- разбор сообщений клиента (запросы)
+    def filter_requests(self, data):
+        out = bytearray()
+        off = 0
+        while len(data) - off >= 8:
+            obj, word = struct.unpack_from("<II", data, off)
+            size, op = word >> 16, word & 0xFFFF
+            if size < 8 or size % 4 or size > MAX_MSG:
+                raise ProtocolError(f"размер {size}")
+            if len(data) - off < size:
+                break
+            msg = data[off:off + size]
+            off += size
+            out += self.request(obj, op, msg)
+        return out, data[off:]
+
+    def request(self, obj, op, msg):
+        body = msg[8:]
+        if obj == 1 and op == WL_DISPLAY_GET_REGISTRY:
+            (new_id,) = struct.unpack_from("<I", body, 0)
+            self.registries.add(new_id)
+        elif obj in self.registries and op == WL_REGISTRY_BIND:
+            (name,) = struct.unpack_from("<I", body, 0)
+            iface, o = get_string(body, 4)
+            _ver, new_id = struct.unpack_from("<II", body, o)
+            if self.names.get(name) != iface.decode():
+                raise ProtocolError(f"попытка привязать скрытый объект #{name} ({iface!r})")
+            if iface == b"xdg_wm_base":
+                self.wm_bases.add(new_id)
+        elif obj in self.wm_bases and op == XDG_WM_BASE_GET_XDG_SURFACE:
+            (new_id,) = struct.unpack_from("<I", body, 0)
+            self.xdg_surfaces.add(new_id)
+        elif obj in self.xdg_surfaces and op == XDG_SURFACE_GET_TOPLEVEL:
+            (new_id,) = struct.unpack_from("<I", body, 0)
+            self.toplevels.add(new_id)
+            # сразу пометить окно: даже если клиент не задаст app_id, правило mango сработает
+            return bytes(msg) + message(new_id, XDG_TOPLEVEL_SET_APP_ID, put_string(APPID_PREFIX.encode()))
+        elif obj in self.toplevels:
+            if op == XDG_TOPLEVEL_SET_FULLSCREEN:
+                return b""          # полноэкранный режим — только привязкой mango (docs/08)
+            if op == XDG_TOPLEVEL_SET_TITLE:
+                title, _ = get_string(body, 0)
+                return message(obj, op, put_string(TITLE_PREFIX.encode() + clean(title, 200)))
+            if op == XDG_TOPLEVEL_SET_APP_ID:
+                app, _ = get_string(body, 0)
+                return message(obj, op, put_string(APPID_PREFIX.encode() + b"." + clean(app, 100)))
+        return bytes(msg)
+
+    # --- разбор сообщений композитора (события)
+    def filter_events(self, data):
+        out = bytearray()
+        off = 0
+        while len(data) - off >= 8:
+            obj, word = struct.unpack_from("<II", data, off)
+            size, op = word >> 16, word & 0xFFFF
+            if size < 8 or size % 4 or size > MAX_MSG:
+                raise ProtocolError(f"размер события {size}")
+            if len(data) - off < size:
+                break
+            msg = data[off:off + size]
+            off += size
+            out += self.event(obj, op, msg)
+        return out, data[off:]
+
+    def event(self, obj, op, msg):
+        body = msg[8:]
+        if obj in self.registries:
+            if op == WL_REGISTRY_GLOBAL:
+                (name,) = struct.unpack_from("<I", body, 0)
+                iface, _ = get_string(body, 4)
+                if iface.decode() not in ALLOWED:
+                    return b""
+                self.names[name] = iface.decode()
+            elif op == WL_REGISTRY_GLOBAL_REMOVE:
+                (name,) = struct.unpack_from("<I", body, 0)
+                if self.names.pop(name, None) is None:
+                    return b""
+        elif obj == 1 and op == WL_DISPLAY_DELETE_ID:
+            (oid,) = struct.unpack_from("<I", body, 0)
+            for s in (self.registries, self.wm_bases, self.xdg_surfaces, self.toplevels):
+                s.discard(oid)
+        return bytes(msg)
+
+    # --- ввод-вывод
+    def readable(self, side):
+        src, dst = (self.c, self.s) if side == "c" else (self.s, self.c)
+        try:
+            data, anc, flags, _ = src.sock.recvmsg(
+                65536, socket.CMSG_SPACE(MAX_FDS * 4), socket.MSG_CMSG_CLOEXEC)
+        except (BlockingIOError, InterruptedError):
+            return
+        fds = array.array("i")
+        for level, typ, cdata in anc:
+            if level == socket.SOL_SOCKET and typ == socket.SCM_RIGHTS:
+                fds.frombytes(cdata[:len(cdata) - len(cdata) % 4])
+        src.fds.extend(fds)
+        if flags & socket.MSG_CTRUNC:
+            raise ProtocolError("больше 28 fd за раз")
+        if not data:
+            raise ConnectionError("закрыто")
+        src.inbuf += data
+        if side == "c":
+            out, rest = self.filter_requests(src.inbuf)
+        else:
+            out, rest = self.filter_events(src.inbuf)
+        src.inbuf = bytearray(rest)
+        if not out:
+            if len(src.fds) > 4 * MAX_FDS:
+                raise ProtocolError("слишком много fd без данных")
+            return
+        # fd уходят не позже сообщения, которому принадлежат: всё накопленное — сейчас.
+        # libwayland принимает не больше 28 fd за recvmsg — делим по 28, каждую
+        # порцию с хотя бы одним байтом (поток байтов можно резать где угодно).
+        fds_now, src.fds = src.fds, []
+        while len(fds_now) > MAX_FDS and len(out) > 1:
+            dst.out.append((bytes(out[:1]), fds_now[:MAX_FDS]))
+            out, fds_now = out[1:], fds_now[MAX_FDS:]
+            dst.out_bytes += 1
+        dst.out.append((bytes(out), fds_now))
+        dst.out_bytes += len(out)
+        self.flush(dst)
+
+    def flush(self, dst):
+        while dst.out:
+            data, fds = dst.out[0]
+            anc = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))] if fds else []
+            try:
+                n = dst.sock.sendmsg([data], anc)
+            except (BlockingIOError, InterruptedError):
+                break
+            for fd in fds:
+                os.close(fd)
+            dst.out_bytes -= n
+            if n < len(data):
+                dst.out[0] = (data[n:], [])
+            else:
+                dst.out.pop(0)
+        self.proxy.update(self)
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        for side in (self.c, self.s):
+            for fd in side.fds:
+                os.close(fd)
+            for _, fds in side.out:
+                for fd in fds:
+                    os.close(fd)
+            try:
+                self.proxy.sel.unregister(side.sock)
+            except (KeyError, ValueError):
+                pass
+            side.sock.close()
+
+
+class Proxy:
+    def __init__(self):
+        rt = os.environ.get("XDG_RUNTIME_DIR")
+        disp = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
+        if not rt:
+            sys.exit("vh-wlfilter: нет XDG_RUNTIME_DIR")
+        self.upstream = disp if disp.startswith("/") else os.path.join(rt, disp)
+        self.sel = selectors.DefaultSelector()
+        try:
+            os.unlink(LISTEN)
+        except FileNotFoundError:
+            pass
+        self.lsock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
+        old = os.umask(0o117)
+        try:
+            self.lsock.bind(LISTEN)
+        finally:
+            os.umask(old)
+        os.chmod(LISTEN, 0o660)
+        self.lsock.listen(8)
+        self.lsock.setblocking(False)
+        self.sel.register(self.lsock, selectors.EVENT_READ, None)
+        log(f"слушаю {LISTEN} → {self.upstream}")
+
+    def update(self, conn):
+        """Регистрация событий с учётом очередей (обратное давление)."""
+        if conn.closed:
+            return
+        for side, other, tag in ((conn.c, conn.s, "c"), (conn.s, conn.c, "s")):
+            ev = 0
+            if other.out_bytes < HIGH_WATER:
+                ev |= selectors.EVENT_READ
+            if side.out:
+                ev |= selectors.EVENT_WRITE
+            key = self.sel.get_map().get(side.sock)
+            if ev == 0:
+                if key:
+                    self.sel.unregister(side.sock)
+            elif key:
+                if key.events != ev:
+                    self.sel.modify(side.sock, ev, (conn, tag))
+            else:
+                self.sel.register(side.sock, ev, (conn, tag))
+
+    def run(self):
+        while True:
+            for key, mask in self.sel.select():
+                if key.data is None:
+                    try:
+                        client, _ = self.lsock.accept()
+                    except BlockingIOError:
+                        continue
+                    try:
+                        conn = Conn(self, client)
+                    except OSError as e:
+                        log(f"нет связи с композитором: {e}")
+                        client.close()
+                        continue
+                    self.update(conn)
+                    continue
+                conn, tag = key.data
+                if conn.closed:
+                    continue
+                try:
+                    if mask & selectors.EVENT_WRITE:
+                        conn.flush(conn.c if tag == "c" else conn.s)
+                    if mask & selectors.EVENT_READ and not conn.closed:
+                        conn.readable(tag)
+                except (ConnectionError, OSError):
+                    conn.close()
+                except Exception as e:  # ProtocolError, ошибки разбора: рвём только это соединение
+                    log(f"клиент отключён: {e!r}")
+                    conn.close()
+
+
+def main():
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    Proxy().run()
+
+
+if __name__ == "__main__":
+    main()

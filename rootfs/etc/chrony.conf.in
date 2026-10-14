@@ -1,0 +1,16 @@
+# void-hardened: время только по NTS — аутентифицированный NTP (docs/06, docs/07).
+@VH_CHRONY_SERVERS@
+# не меньше двух согласных источников; без аутентификации — не принимать
+minsources 2
+authselectmode require
+# сохранять ключи и cookie NTS между перезапусками: старт без нового NTS-KE
+ntsdumpdir /var/lib/chrony
+driftfile /var/lib/chrony/drift
+# быстрый старт: шагнуть часы в первых трёх обновлениях, если сдвиг > 1 с
+makestep 1.0 3
+# после первой синхронизации не принимать скачки больше 100 с (не выходить)
+maxchange 100 1 -1
+rtcsync
+# не сервер и без сетевого командного порта (chronyc работает через unix-сокет)
+port 0
+cmdport 0

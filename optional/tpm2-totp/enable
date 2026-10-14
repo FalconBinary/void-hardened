@@ -1,0 +1,60 @@
+#!/bin/bash
+# void-hardened: anti-evil-maid — код TOTP из TPM до ввода пароля LUKS (docs/13, tpm2-totp).
+#   doas /root/vh/optional/tpm2-totp/enable
+# Секрет запечатан в TPM на значения PCR 0,2,4,7 (прошивка, Option ROM, загруженные
+# EFI-образы — Limine и UKI, Secure Boot) и PCR 14 = 0. Подмена любого звена → TPM не
+# отдаёт секрет → код не совпадает с телефоном. После показа кода initramfs расширяет
+# PCR 14 — работающая система не посчитает коды на будущее время.
+. "$(dirname "$0")/../lib.sh"
+PCRS=${VH_TOTP_PCRS:-0,2,4,7,14}
+LOCK_PCR=14
+[ -e /dev/tpmrm0 ] || die "нет TPM (/dev/tpmrm0): включите PTT в BIOS (docs/00)"
+case ",$PCRS," in *",$LOCK_PCR,"*) ;; *) die "PCRS должен включать PCR $LOCK_PCR" ;; esac
+
+say "пакет tpm2-totp"
+xbps-install -Sy tpm2-totp
+
+cur=$(tpm2_pcrread "sha256:$LOCK_PCR" | awk '/0x/ {print $NF}')
+case $cur in 0x0000000000000000000000000000000000000000000000000000000000000000) ;;
+	*) warn "PCR $LOCK_PCR уже не нулевой ($cur) — модуль уже работал в этой загрузке? Генерация всё равно в initramfs" ;;
+esac
+
+say "lockout-авторизация TPM: без неё root сбрасывает защиту от перебора пароля tpm2-totp"
+if tpm2_getcap properties-variable | grep -qi 'lockoutAuthSet: *1'; then
+	ok "lockoutAuth уже задана (храните её офлайн)"
+else
+	la=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+	tpm2_changeauth -c lockout "$la"
+	tpm2_dictionarylockout --setup-parameters --max-tries=5 --recovery-time=86400 \
+		--lockout-recovery-time=86400 --auth="$la"
+	cat <<EOT
+
+  Lockout-авторизация TPM (запишите офлайн вместе с ключами PK/KEK, docs/10):
+      $la
+  Без неё: сброс TPM — только из BIOS (с физическим подтверждением), а 5 неверных
+  паролей tpm2-totp блокируют перебор на сутки.
+EOT
+	confirm_exact "записал" "Записали значение?"
+fi
+
+say "модуль dracut 90vhtotp"
+rm -rf /usr/lib/dracut/modules.d/90vhtotp
+cp -r "$MOD_DIR/90vhtotp" /usr/lib/dracut/modules.d/90vhtotp
+chmod 0755 /usr/lib/dracut/modules.d/90vhtotp/*.sh
+printf 'PCRS="%s"\nLOCK_PCR=%s\n' "$PCRS" "$LOCK_PCR" > /etc/vh/totp.conf
+echo 'add_dracutmodules+=" vhtotp "' > /etc/dracut.conf.d/20-vh-totp.conf
+install -d -m 0700 /var/lib/vh
+: > /var/lib/vh/totp-generate
+rebuild_uki
+mark_enabled
+cat <<EOT
+
+Дальше:
+  1. перезагрузитесь; после пароля LUKS initramfs попросит пароль восстановления
+     tpm2-totp (diceware от 5 слов, свой) и покажет QR-код — добавьте его в приложение
+     TOTP на телефоне (Aegis, FreeOTP и т. п.);
+  2. на каждой загрузке — до ввода пароля LUKS — сверяйте код на экране с телефоном;
+     не совпал без обновления ядра — не вводите пароль (docs/13);
+  3. после обновления ядра/микрокода/BIOS код один раз не совпадёт: сверьте версию
+     ядра на экране с записанной, введите RESEAL и пароль восстановления.
+EOT

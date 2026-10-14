@@ -1,0 +1,4 @@
+# void-hardened: кто может спрашивать локальный unbound (127.0.0.1:53) — БАЗОВЫЙ слой:
+# все. Строгий режим (optional/strict-net) оставляет браузер, chrony и временные
+# разрешения: иначе процесс без сети выносит данные DNS-запросами (docs/06, docs/13).
+ip daddr 127.0.0.1 meta l4proto { tcp, udp } th dport 53 accept

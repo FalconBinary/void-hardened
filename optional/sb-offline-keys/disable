@@ -1,0 +1,12 @@
+#!/bin/bash
+# void-hardened: вернуть ключи Secure Boot на корневую ФС (базовый слой).
+. "$(dirname "$0")/../lib.sh"
+/usr/local/sbin/vh-keys mount
+install -d -m 0700 /root/vh-keys-tmp
+cp -a /var/lib/sbctl/keys/. /root/vh-keys-tmp/
+/usr/local/sbin/vh-keys umount
+cp -a /root/vh-keys-tmp/. /var/lib/sbctl/keys/
+rm -rf /root/vh-keys-tmp
+chmod -R go-rwx /var/lib/sbctl
+sed -i 's/^KEYS_OFFLINE=.*/KEYS_OFFLINE=no/' /etc/vh/boot.conf
+mark_disabled

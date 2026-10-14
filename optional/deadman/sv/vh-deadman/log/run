@@ -1,0 +1,2 @@
+#!/bin/sh
+exec vlogger -t vh-deadman -p daemon

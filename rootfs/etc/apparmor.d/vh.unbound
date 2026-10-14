@@ -1,0 +1,41 @@
+# void-hardened: unbound — локальный резолвер (docs/06). После старта работает от
+# _unbound в chroot /etc/unbound; писать может только в /etc/unbound/var (root.key).
+abi <abi/4.0>,
+include <tunables/global>
+
+profile vh.unbound /usr/bin/unbound flags=(attach_disconnected) {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+
+  capability setuid,
+  capability setgid,
+  capability sys_chroot,
+  capability net_bind_service,
+  capability sys_resource,
+
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network unix dgram,
+  deny network alg,
+  deny network packet,
+  deny network netlink,
+
+  /usr/bin/unbound mr,
+  /etc/unbound/ r,
+  /etc/unbound/** r,
+  /etc/unbound/var/ rw,
+  /etc/unbound/var/** rwk,
+  /var/ r,
+  /var/** r,
+  /proc/sys/net/core/somaxconn r,
+  /proc/*/stat r,
+  /dev/urandom r,
+  /dev/log w,
+
+  deny userns,
+  deny mount,
+
+  include if exists <local/vh.unbound>
+}

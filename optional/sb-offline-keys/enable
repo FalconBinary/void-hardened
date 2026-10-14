@@ -1,0 +1,66 @@
+#!/bin/bash
+# void-hardened: ключи Secure Boot — на отдельном зашифрованном носителе (docs/13).
+#   doas /root/vh/optional/sb-offline-keys/enable /dev/sdX
+# Носитель (флешка ≥ 1 ГБ) будет стёрт. Ключи PK/KEK/db переносятся на него, с корневой
+# ФС удаляются; там же — эталоны для проверки сборки UKI. Без носителя UKI не подписать.
+. "$(dirname "$0")/../lib.sh"
+DEV=${1:-}
+[ -b "$DEV" ] || die "укажите носитель: enable /dev/sdX  (lsblk -d -o NAME,SIZE,TRAN,MODEL)"
+[ "$(lsblk -dno TYPE "$DEV")" = disk ] || die "$DEV — не целый диск"
+[ "$(lsblk -dno TRAN "$DEV")" = usb ] || die "$DEV — не USB-носитель"
+root_disk=$(lsblk -no PKNAME "$(findmnt -no SOURCE /boot/efi 2>/dev/null || echo /dev/null)" 2>/dev/null || true)
+[ "/dev/$root_disk" != "$DEV" ] || die "$DEV — системный диск"
+[ "$(blockdev --getsize64 "$DEV")" -ge 1000000000 ] || die "нужен носитель от 1 ГБ (XFS)"
+[ -s /var/lib/sbctl/keys/db/db.key ] || die "в /var/lib/sbctl/keys нет ключей (уже перенесены?)"
+for p in /etc/dracut.conf.d /etc/default/dracut-uefi-hook; do [ -e "$p" ] || die "нет $p"; done
+
+cat <<EOT
+Перед переносом убедитесь, что система чистая: только что установлена, с момента
+загрузки не запускался браузер, вход — админом на tty2 до входа пользователя (docs/13).
+Эталоны проверки UKI снимаются с текущего состояния — подменённое сейчас станет «эталоном».
+EOT
+confirm_exact "$DEV" "Носитель $DEV ($(lsblk -dno SIZE,MODEL "$DEV")) будет стёрт."
+
+install -m 0755 "$MOD_DIR/vh-keys" /usr/local/sbin/vh-keys
+install -m 0755 "$MOD_DIR/vh-uki-verify" /usr/local/sbin/vh-uki-verify
+
+say "LUKS2 на носителе (пароль — свой, не совпадающий с остальными)"
+wipefs -af "$DEV"
+cryptsetup luksFormat --type luks2 --pbkdf argon2id --label vhkeys "$DEV"
+uuid=$(cryptsetup luksUUID "$DEV")
+echo "KEYS_UUID=$uuid" > /etc/vh/keys.conf
+cryptsetup open "$DEV" vh-keys
+mkfs.xfs -q -L vhkeys /dev/mapper/vh-keys
+install -d -m 0700 /run/vh-keys
+mount -o nosuid,nodev,noexec /dev/mapper/vh-keys /run/vh-keys
+install -d -m 0700 /run/vh-keys/sbctl /run/vh-keys/ref
+cp -a /var/lib/sbctl/keys/. /run/vh-keys/sbctl/
+
+say "эталоны проверки UKI"
+cur=$(ls -t /boot/efi/EFI/void/linux-*.efi 2>/dev/null | head -1 || true)
+if [ -z "$cur" ]; then mount /boot/efi && trap 'umount /boot/efi' EXIT; cur=$(ls -t /boot/efi/EFI/void/linux-*.efi | head -1); fi
+cp -a "$cur" /run/vh-keys/ref/  # копия текущей UKI — для сверки при восстановлении
+/usr/local/sbin/vh-uki-verify --init "$cur"
+sync
+
+say "ключи на корневой ФС удаляются"
+find /var/lib/sbctl/keys -type f -exec shred -u {} + 2>/dev/null || find /var/lib/sbctl/keys -type f -delete
+find /var/lib/sbctl/keys -mindepth 1 -type d -empty -delete
+[ "$VH_TRIM" = yes ] && fstrim / || true
+sed -i 's/^KEYS_OFFLINE=.*/KEYS_OFFLINE=yes/' /etc/vh/boot.conf
+grep -q '^KEYS_OFFLINE=yes' /etc/vh/boot.conf || echo KEYS_OFFLINE=yes >> /etc/vh/boot.conf
+umount /run/vh-keys
+cryptsetup close vh-keys
+mark_enabled
+cat <<EOT
+Ключи — только на носителе ($uuid). Храните его отдельно от ноутбука; сделайте копию
+(второй такой же носитель: dd с закрытого тома) — без ключей обновить ядро нельзя,
+только перевыпуском ключей через Setup Mode (docs/13).
+
+Остаточный риск: удалённые файлы ключей могли остаться в свободных блоках корневого
+тома (он зашифрован, но root работающей системы читает его целиком). Для полной
+гарантии — перевыпустите ключи прямо на носителе (docs/13, «Перевыпуск ключей»).
+
+Обновление ядра теперь: doas vh-update — он сам скачает пакеты, попросит вставить
+носитель, выключит сеть на время подписи и вернёт её.
+EOT

@@ -1,0 +1,66 @@
+#!/bin/bash
+# void-hardened: домашний каталог без точек автозапуска (docs/13, home-lockdown).
+# $HOME — root:<группа пользователя> 0750: пользователь не создаст ~/.bash_profile,
+# ~/.local/share/applications/*.desktop или ~/.config/mango/config.conf со своей командой.
+# Записываемы только перечисленные каталоги. Конфиги — root, только чтение; правка — через
+# ~/config-drafts и vh-apply-config (админ видит diff и строки, запускающие программы).
+. "$(dirname "$0")/../lib.sh"
+u=$VH_USER
+h=/home/$u
+g=$(id -gn "$u")
+WRITABLE="Documents Projects Pictures Videos Music config-drafts .cache .local/state .local/share/wireplumber .local/share/zrun"
+[ -n "${VH_DEV_DIR:-}" ] && WRITABLE="$WRITABLE $VH_DEV_DIR"
+
+cat <<EOT
+Записываемыми останутся: $WRITABLE (+ ~/Downloads → /home/xfer).
+Всё остальное в $h — только чтение. Файлы, которые программы сохраняют в других местах
+(например, ~/.config/<программа>/state), перестанут сохраняться — их каталоги добавьте
+в список WRITABLE в этом скрипте или переносите настройки через ~/config-drafts.
+Выполняйте, когда $u не в сеансе (выйдите из mango).
+EOT
+confirm_exact lock "Закрыть домашний каталог $u?"
+pgrep -u "$u" >/dev/null && die "у $u есть процессы — выйдите из сеанса"
+
+install -m 0755 "$MOD_DIR/vh-apply-config" /usr/local/sbin/vh-apply-config
+# записываемые каталоги — пользователя
+for w in $WRITABLE; do
+	install -d -m 0700 -o "$u" -g "$g" "$h/$w"
+done
+chown "$u:$g" "$h/.local/state" "$h/.cache"
+# конфиги и всё прочее — root, только чтение
+for f in .bashrc .bash_profile .profile .inputrc .bash_logout; do
+	[ -e "$h/$f" ] || : > "$h/$f"
+done
+printf '%s\n' "# void-hardened: история — в записываемом каталоге" \
+	'HISTFILE=$HOME/.local/state/bash_history' >> "$h/.bashrc"
+for p in "$h"/.[!.]* "$h"/*; do
+	[ -e "$p" ] || [ -L "$p" ] || continue
+	n=${p#"$h"/}
+	keep=0
+	for w in $WRITABLE Downloads .local; do [ "$n" = "${w%%/*}" ] && keep=1; done
+	[ "$keep" = 1 ] && continue
+	chown -R -h root:root "$p"
+	chmod -R go-w,u+rwX "$p"
+	[ -d "$p" ] && chmod 0755 "$p"
+done
+# ~/.local — root; внутри записываемы только state и share/<приложение>
+chown root:root "$h/.local" "$h/.local/share" 2>/dev/null || true
+chmod 0755 "$h/.local" "$h/.local/share" 2>/dev/null || true
+# ~/.gnupg: данные пишет пользователь, исполняемый конфиг (pinentry-program) — root (sticky)
+if [ -d "$h/.gnupg" ]; then
+	chown root:"$g" "$h/.gnupg"; chmod 1770 "$h/.gnupg"
+	for c in gpg-agent.conf gpg.conf dirmngr.conf scdaemon.conf; do
+		[ -e "$h/.gnupg/$c" ] || : > "$h/.gnupg/$c"
+		chown root:root "$h/.gnupg/$c"; chmod 0644 "$h/.gnupg/$c"
+	done
+fi
+chown root:"$g" "$h"; chmod 0750 "$h"
+# git: хуки и fsmonitor из репозиториев (например, из загрузок) не исполняются
+if ! grep -q 'hooksPath' /etc/gitconfig 2>/dev/null; then
+	install -d -m 0755 /etc/vh/git-hooks-none
+	printf '%s\n' "# void-hardened (optional/home-lockdown): чужие репозитории не исполняют свой код" \
+		"[core]" "	hooksPath = /etc/vh/git-hooks-none" "	fsmonitor = false" >> /etc/gitconfig
+fi
+grep -q 'vh-apply-config' /etc/doas.conf || true
+mark_enabled
+echo "Готово. Свои настройки: правьте ~/config-drafts/…, затем админ — doas vh-apply-config."

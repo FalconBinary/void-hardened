@@ -1,0 +1,7 @@
+# Хук dracut-uefi (/usr/libexec/dracut/uefi-hook-postinst) собирает UKI:
+#   dracut --uefi /boot/efi/EFI/void/linux-<версия>.efi
+# Командная строка встраивается в секцию .cmdline UKI. При Secure Boot
+# systemd-stub игнорирует cmdline, переданную загрузчиком, — изменить её можно
+# только пересборкой и переподписью UKI. Параметры объяснены в docs/03-boot.md.
+KERNEL_CMDLINE="@VH_CMDLINE@"
+UEFI_BUNDLE_DIR="boot/efi/EFI/void/"

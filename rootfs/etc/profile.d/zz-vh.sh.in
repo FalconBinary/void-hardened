@@ -1,0 +1,20 @@
+# void-hardened: окружение входа (docs/05, docs/12). Читается login-шеллами.
+umask 077
+# python3 не выполняет .pth и usercustomize.py из ~/.local (точка закрепления)
+export PYTHONNOUSERSITE=1
+# less: без shell-escape, редактора и файла истории (просмотр недоверенного текста)
+export LESSSECURE=1 LESSHISTFILE=-
+
+if [ "$(id -un)" = "@VH_ADMIN@" ]; then
+	# Сеанс админа закрывается после 10 минут бездействия в приглашении,
+	# а при выходе не остаётся ни одного его процесса (в том числе nohup/setsid).
+	readonly TMOUT=600
+	export TMOUT
+	trap 'kill -KILL -1' EXIT
+fi
+
+# Повседневный пользователь на tty1 сразу попадает в графический сеанс;
+# после выхода из mango — снова приглашение входа, а не шелл.
+if [ "$(id -un)" = "@VH_USER@" ] && [ "$(tty)" = /dev/tty1 ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+	exec /usr/local/bin/vh-session
+fi

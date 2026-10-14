@@ -1,0 +1,5 @@
+# Источается run-скриптом iwd. iwd нужна системная шина: ждём её до 5 с, а не
+# выходим с ошибкой (runsv перезапустил бы нас только через секунду).
+sv -w 5 start dbus >/dev/null 2>&1 || exit 1
+# fail-closed: без правил файрвола сеть не поднимаем
+nft list table inet vh >/dev/null 2>&1 || nft list table inet vh_failsafe >/dev/null 2>&1 || exit 1

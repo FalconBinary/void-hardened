@@ -1,0 +1,4 @@
+#!/bin/sh
+# void-hardened: крышка и кнопка питания (docs/05, docs/12). Настройки — /etc/vh/acpi.conf.
+exec 2>&1
+exec /usr/local/sbin/vh-acpid

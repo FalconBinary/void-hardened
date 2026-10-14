@@ -1,0 +1,10 @@
+#!/bin/bash
+# void-hardened: выключить tpm2-totp (секрет в TPM удаляется).
+. "$(dirname "$0")/../lib.sh"
+rm -f /etc/dracut.conf.d/20-vh-totp.conf /var/lib/vh/totp-generate /var/lib/vh/totp-reseal
+. /etc/vh/totp.conf 2>/dev/null || true
+tpm2-totp clean 2>/dev/null || warn "tpm2-totp clean не удался (секрета нет?)"
+rm -f /etc/vh/totp.conf
+rm -rf /usr/lib/dracut/modules.d/90vhtotp
+rebuild_uki
+mark_disabled

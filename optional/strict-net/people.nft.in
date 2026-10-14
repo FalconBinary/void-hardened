@@ -1,0 +1,5 @@
+# void-hardened: исходящая сеть root и людей — СТРОГИЙ режим (optional/strict-net, docs/13).
+# root: HTTPS только к адресам зеркал xbps и только на время (vh-net xbps; vh-update сам)
+meta skuid "root" ip daddr @root_https tcp dport 443 accept
+# повседневный пользователь и админ: сети нет. Временно — doas vh-net allow ИМЯ МИН
+meta skuid @people_tmp accept

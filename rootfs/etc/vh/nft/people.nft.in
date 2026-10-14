@@ -1,0 +1,7 @@
+# void-hardened: исходящая сеть root и людей — БАЗОВЫЙ слой (подключается из
+# /etc/nftables.conf, цепочка output). Строгий режим: optional/strict-net (docs/13).
+# root: только HTTPS (xbps); без DNS-имён зеркал root не обойдётся — см. lo-dns.nft
+meta skuid "root" tcp dport 443 accept
+# повседневный пользователь и админ: сеть есть (git, ssh, ping через ping_group_range)
+meta skuid "@VH_USER@" accept
+meta skuid "@VH_ADMIN@" accept

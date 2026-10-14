@@ -1,0 +1,65 @@
+#!/bin/sh
+# void-hardened: временные сетевые разрешения строгого режима (optional/strict-net, docs/13).
+# Меняются только элементы заранее объявленных set'ов с таймаутом — правила и цепочки
+# не трогаются, а ядро само удаляет разрешение по истечении срока (откат без демона).
+#   doas vh-net status
+#   doas vh-net xbps [МИН]            root: DNS и HTTPS к зеркалам из /etc/xbps.d (30 мин)
+#   doas vh-net allow ИМЯ [МИН]       сеть и DNS пользователю (10 мин)
+#   doas vh-net revoke ИМЯ            отозвать досрочно
+set -eu
+PATH=/usr/bin
+[ "$(id -u)" = 0 ] || { echo "запустите: doas vh-net …" >&2; exit 1; }
+usage() { sed -n '4,7p' "$0" | sed 's/^# //' >&2; exit 2; }
+minutes() {
+	case $1 in ''|*[!0-9]*) echo "vh-net: минуты — целое число" >&2; exit 2 ;; esac
+	[ "$1" -ge 1 ] && [ "$1" -le 240 ] || { echo "vh-net: от 1 до 240 минут" >&2; exit 2; }
+	echo "$1"
+}
+uid_of() {
+	u=$(id -u "$1" 2>/dev/null) || { echo "vh-net: нет пользователя $1" >&2; exit 2; }
+	[ "$u" -ne 0 ] || { echo "vh-net: root — только через «vh-net xbps»" >&2; exit 2; }
+	echo "$u"
+}
+nft list table inet vh >/dev/null 2>&1 || { echo "vh-net: нет таблицы inet vh" >&2; exit 1; }
+
+case ${1:-} in
+	status)
+		if grep -q 'people_tmp accept' /etc/vh/nft/people.nft 2>/dev/null; then
+			echo "режим: строгий (optional/strict-net)"
+		else
+			echo "режим: базовый (у людей сеть есть)"
+		fi
+		for s in root_https people_tmp dns_tmp; do
+			printf '%s: ' "$s"
+			nft -j list set inet vh "$s" | python3 -I -c 'import json,sys
+d=json.load(sys.stdin)["nftables"]
+el=[e for x in d if "set" in x for e in x["set"].get("elem",[])]
+print(", ".join(str(e["elem"]["val"])+" ("+str(e["elem"].get("expires","?"))+" с)" if isinstance(e,dict) else str(e) for e in el) or "—")'
+		done ;;
+	xbps)
+		m=$(minutes "${2:-30}")
+		nft add element inet vh dns_tmp "{ 0 timeout ${m}m }"
+		hosts=$(sed -n 's|^repository=https://\([^/:]*\).*|\1|p' /etc/xbps.d/*.conf | sort -u)
+		[ -n "$hosts" ] || { echo "vh-net: в /etc/xbps.d нет https-зеркал" >&2; exit 1; }
+		n=0
+		for h in $hosts; do
+			for ip in $(getent ahostsv4 "$h" | awk '{print $1}' | sort -u); do
+				nft add element inet vh root_https "{ $ip timeout ${m}m }"
+				n=$((n + 1))
+			done
+		done
+		[ "$n" -gt 0 ] || { echo "vh-net: имена зеркал не разрешились (нет сети?)" >&2; exit 1; }
+		echo "root: DNS и HTTPS к зеркалам ($hosts, адресов: $n) на $m мин" ;;
+	allow)
+		uid=$(uid_of "${2:?$(usage)}")
+		m=$(minutes "${3:-10}")
+		nft add element inet vh people_tmp "{ $uid timeout ${m}m }"
+		nft add element inet vh dns_tmp "{ $uid timeout ${m}m }"
+		echo "$2: сеть и DNS на $m мин" ;;
+	revoke)
+		uid=$(uid_of "${2:?$(usage)}")
+		nft delete element inet vh people_tmp "{ $uid }" 2>/dev/null || true
+		nft delete element inet vh dns_tmp "{ $uid }" 2>/dev/null || true
+		echo "$2: разрешение отозвано" ;;
+	*) usage ;;
+esac

@@ -1,0 +1,3 @@
+# void-hardened: профиль «от сети / от батареи» без демонов (docs/11).
+# Из события берётся только факт смены — состояние скрипт читает из sysfs сам.
+SUBSYSTEM=="power_supply", ATTR{type}=="Mains", RUN+="/usr/local/sbin/vh-power"

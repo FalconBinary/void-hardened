@@ -1,0 +1,9 @@
+#!/bin/sh
+# void-hardened: статический адрес Ethernet (VH_ETH=static, docs/06).
+exec 2>&1
+PATH=/usr/bin
+nft list table inet vh >/dev/null 2>&1 || exit 1
+ip link set eth0 up
+ip addr replace @VH_ETH_ADDR@ dev eth0
+ip route replace default via @VH_ETH_GW@ dev eth0 metric 100
+exec pause

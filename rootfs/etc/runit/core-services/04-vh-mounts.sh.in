@@ -1,0 +1,13 @@
+# vim: set ts=4 sw=4 et:
+# void-hardened. runit монтирует /proc, /dev, /dev/shm и /run в 00-pseudofs.sh —
+# раньше, чем читается fstab, а «mount -a» их пропускает. Поэтому опции задаём
+# перемонтированием здесь (docs/05). Файлы core-services выполняются через «.»:
+# return вместо exit, без set -e.
+msg "vh: опции монтирования псевдо-ФС..."
+_vh_gid=$(getent group proc | cut -d: -f3)
+# hidepid=invisible: пользователь не видит чужие процессы (кроме группы proc — админ).
+mount -o remount,nosuid,nodev,noexec,hidepid=invisible${_vh_gid:+,gid=$_vh_gid} /proc
+mount -o remount,nosuid,nodev,noexec,size=@VH_SHM_SIZE@ /dev/shm
+mount -o remount,nosuid,nodev,noexec /run
+mount -o remount,nosuid,noexec /dev
+unset _vh_gid

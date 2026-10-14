@@ -1,0 +1,22 @@
+#!/bin/bash
+# void-hardened: сеанс повседневного пользователя в пустом netns (docs/13, session-netns).
+. "$(dirname "$0")/../lib.sh"
+install -m 0755 "$MOD_DIR/vh-login-netns" /usr/local/sbin/vh-login-netns
+conf=/etc/sv/agetty-tty1/conf
+save_orig "$conf"
+if grep -q '^GETTY_ARGS=' "$conf" 2>/dev/null; then
+	grep -q 'login-program' "$conf" || sed -i 's|^GETTY_ARGS="\(.*\)"|GETTY_ARGS="\1 --login-program /usr/local/sbin/vh-login-netns"|' "$conf"
+else
+	echo 'GETTY_ARGS="--noclear --login-program /usr/local/sbin/vh-login-netns"' >> "$conf"
+fi
+grep -n GETTY_ARGS "$conf"
+mark_enabled
+cat <<EOT
+Действует со следующего входа на tty1 (выйдите из mango).
+Проверка из терминала сеанса:
+  ip -br link                → только lo
+  getent hosts voidlinux.org → ошибка без единого пакета в сети
+  Super+B                    → браузер работает (в сети init)
+Цена: у программ пользователя нет сети совсем (git, ssh, pip) — только через админа
+или временно выключив модуль.
+EOT

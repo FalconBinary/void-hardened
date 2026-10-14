@@ -1,0 +1,31 @@
+#!/bin/sh
+# void-hardened: снять SUID и file capabilities, которые вернуло обновление пакета
+# (chmod и setcap откатываются при каждом обновлении). docs/05, docs/09.
+# Остаются только SUID у doas и unix_chkpwd (без него swaylock не проверит пароль).
+#   vh-suid-strip [--quiet] [--audit]
+set -u
+PATH=/usr/bin
+q=0; [ "${1:-}" = --quiet ] && q=1
+say() { [ "$q" = 1 ] || echo "$*"; }
+
+# Нужны только root — снимаем SUID (root запускает их и без него).
+for f in /usr/bin/passwd /usr/bin/chage /usr/bin/mount /usr/bin/umount; do
+	[ -u "$f" ] && chmod u-s "$f" && say "SUID снят: $f"
+done
+# Не нужны никому — исключены через noextract; если всё же появились — снять.
+for f in /usr/bin/su /usr/bin/sg /usr/bin/newgrp /usr/bin/chsh /usr/bin/chfn \
+	/usr/bin/expiry /usr/bin/gpasswd /usr/bin/newuidmap /usr/bin/newgidmap; do
+	[ -e "$f" ] && chmod u-s,g-s "$f" && say "SUID/SGID снят: $f (ожидался noextract)"
+done
+# ping: ICMP-сокеты по net.ipv4.ping_group_range вместо cap_net_raw.
+for f in /usr/bin/iputils-ping /usr/bin/ping; do
+	[ -f "$f" ] && [ ! -L "$f" ] && [ -n "$(getcap "$f" 2>/dev/null)" ] && setcap -r "$f" && say "capabilities сняты: $f"
+done
+
+if [ "${1:-}" = --audit ]; then
+	echo "SUID/SGID в системе (ожидается только doas и unix_chkpwd):"
+	find / -xdev \( -perm -4000 -o -perm -2000 \) -type f 2>/dev/null | sed 's/^/  /'
+	echo "file capabilities (ожидается пусто):"
+	getcap -r /usr 2>/dev/null | sed 's/^/  /'
+fi
+exit 0

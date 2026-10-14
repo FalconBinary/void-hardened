@@ -1,0 +1,44 @@
+# void-hardened: iwd — Wi-Fi (docs/06). Единственный профиль с AF_ALG: iwd делает
+# криптографию через ядро. Поставляется в режиме complain: на стенде нет Wi-Fi,
+# чтобы проверить все пути (WPA3, 802.1X, роуминг). Через неделю работы проверьте
+# отказы (doas svlogtail kernel | grep vh.iwd) и включите: doas aa-enforce /etc/apparmor.d/vh.iwd
+abi <abi/4.0>,
+include <tunables/global>
+
+profile vh.iwd /usr/libexec/iwd flags=(complain) {
+  include <abstractions/base>
+
+  capability net_admin,
+  capability net_raw,
+  capability net_bind_service,
+
+  network netlink raw,
+  network netlink dgram,
+  network alg seqpacket,
+  network packet raw,
+  network packet dgram,
+  network inet dgram,
+  network inet raw,
+  network unix stream,
+  network unix dgram,
+
+  /usr/libexec/iwd mr,
+  /etc/iwd/ r,
+  /etc/iwd/** r,
+  /var/lib/iwd/ rw,
+  /var/lib/iwd/** rwk,
+  /run/dbus/system_bus_socket rw,
+  /dev/rfkill rw,
+  /proc/sys/net/** rw,
+  /sys/class/** r,
+  /sys/devices/** r,
+  /sys/module/** r,
+  /proc/*/** r,
+  /etc/hosts r,
+  /etc/hostname r,
+
+  deny userns,
+  deny mount,
+
+  include if exists <local/vh.iwd>
+}
