@@ -16,6 +16,7 @@
 import argparse
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -65,10 +66,15 @@ def boot(a, extra=None):
     vm = vhvm.VM(a.dir, a.mem, a.smp)
     extra = list(extra or [])
     if getattr(a, "repo", False):
-        # свежая копия репозитория на CD: /root/vh в системе обновляется перед проверкой
-        iso = os.path.join(vm.d, "repo.iso")
-        vhvm.make_repo_iso(iso)
-        extra += ["-drive", f"file={iso},if=none,id=repo,media=cdrom,readonly=on", "-device", "ide-cd,drive=repo"]
+        # свежая копия репозитория — «сырым» tar на втором NVMe: после 30-lock.sh модуль
+        # isofs не загрузить (modules_disabled), а драйвер NVMe встроен в ядро
+        tar = os.path.join(vm.d, "repo.tar")
+        flags = ["--no-xattrs"] + (["--no-fflags", "--no-mac-metadata"] if sys.platform == "darwin" else [])
+        subprocess.run(["tar", *flags, "-cf", tar, "--exclude", ".git", "--exclude", "__pycache__",
+                        "-C", os.path.dirname(vhvm.REPO), os.path.basename(vhvm.REPO)], check=True,
+                       env=dict(os.environ, COPYFILE_DISABLE="1"))
+        extra += ["-drive", f"file={tar},if=none,id=repo,format=raw,readonly=on",
+                  "-device", "nvme,serial=VHREPO,drive=repo"]
     ser = vm.start(extra)
     ser.expect(r"[Pp]assword|[Pp]assphrase", 1800)
     time.sleep(2)
@@ -76,8 +82,8 @@ def boot(a, extra=None):
     vhvm.login(ser, "admin", vhvm.USER_PASS)
     root_shell(ser)
     if getattr(a, "repo", False):
-        run(ser, "mkdir -p /tmp/r && mount -o ro /dev/sr0 /tmp/r && rm -rf /tmp/vhn && mkdir /tmp/vhn && "
-                 "tar -xf /tmp/r/vh.tar -C /tmp/vhn && umount /tmp/r && "
+        run(ser, "rm -rf /tmp/vhn && mkdir /tmp/vhn && "
+                 "tar -xf $(readlink -f /dev/disk/by-id/nvme-*VHREPO* | head -1) -C /tmp/vhn && "
                  "cp -a /tmp/vhn/void-hardened/install /tmp/vhn/void-hardened/optional "
                  "/tmp/vhn/void-hardened/rootfs /tmp/vhn/void-hardened/tools /root/vh/ && "
                  "cd /tmp/vhn/void-hardened/rootfs/usr/local && find . -type f ! -name '*.in' | "
@@ -200,9 +206,12 @@ def step_desktop(a):
         check("vh-wlfilter без ошибок протокола", "клиент отключён" not in out, out[-400:].replace("\n", " | "))
         rc, out = run(ser, "doas sh -c 'grep -ah DENIED /var/log/socklog/kernel/current | grep -v chronyd | tail -15'")
         print(out)
-        rc, out = run(ser, "p=$(pgrep -u browser firefox | head -1); doas ls /proc/$p/root/home/browser /proc/$p/root/ 2>&1; "
-                           "doas cat /proc/$p/root/proc/interrupts | wc -c; doas cat /proc/$p/mountinfo | grep -E ' /tmp | /dev/shm ' ")
-        check("песочница: /proc/interrupts пуст, /tmp noexec", " 0\n" in out.replace("\r", "") and "noexec" in out)
+        rc, out = run(ser, "p=$(pgrep -u browser firefox | head -1); ls /proc/$p/root/ /proc/$p/root/home/browser; "
+                           "echo interrupts=$(nsenter -t $p -m cat /proc/interrupts | wc -c); "
+                           "grep -E ' /tmp | /dev/shm ' /proc/$p/mountinfo; grep Seccomp: /proc/$p/status")
+        check("песочница: /proc/interrupts пуст", "interrupts=0" in out)
+        check("песочница: /tmp и /dev/shm с noexec", len(re.findall(r" /(tmp|dev/shm) .*noexec", out)) >= 2)
+        check("песочница: seccomp-фильтр bwrap действует", "Seccomp:\t2" in out)
         run(ser, "doas pkill -u browser; doas pkill -u user; true")
     finally:
         shutdown(vm, ser)
