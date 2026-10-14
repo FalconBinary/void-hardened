@@ -30,7 +30,7 @@
 | `[Scan] InitialPeriodicScanInterval` | 3 (по умолч. 10) | без подключения первое пересканирование через 3 с | батарея, эфир |
 | `[Scan] MaximumPeriodicScanInterval` | 30 (по умолч. 300) | новая сеть находится максимум за 30 с | батарея, эфир |
 | `[Rank] BandModifier5GHz` | 1.5 | при близком качестве — 5 ГГц | — |
-| `[Blacklist] InitialTimeout/MaximumTimeout` | 10 / 300 с | точка после единичного сбоя не исключается на минуту и до суток | — |
+| `[Blacklist] InitialTimeout/MaximumTimeout` | 10 / 300 с | точка после единичного сбоя исключается на 10 с (при повторах — до 5 мин), а не на минуту (умолчание) | — |
 | `[DriverQuirks] PowerSaveDisable` | iwlwifi | без энергосбережения Wi-Fi | батарея |
 | `RoamThreshold/RoamThreshold5G` | −70 / −76 dBm | переход на лучшую точку mesh до заметной просадки | — |
 | `DisableANQP` | true | без запросов Hotspot 2.0 (некоторые драйверы сбоят) | — |

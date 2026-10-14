@@ -79,7 +79,9 @@ def boot(a, extra=None):
         run(ser, "mkdir -p /tmp/r && mount -o ro /dev/sr0 /tmp/r && rm -rf /tmp/vhn && mkdir /tmp/vhn && "
                  "tar -xf /tmp/r/vh.tar -C /tmp/vhn && umount /tmp/r && "
                  "cp -a /tmp/vhn/void-hardened/install /tmp/vhn/void-hardened/optional "
-                 "/tmp/vhn/void-hardened/rootfs /tmp/vhn/void-hardened/tools /root/vh/")
+                 "/tmp/vhn/void-hardened/rootfs /tmp/vhn/void-hardened/tools /root/vh/ && "
+                 "cd /tmp/vhn/void-hardened/rootfs/usr/local && find . -type f ! -name '*.in' | "
+                 "while read f; do install -m $(stat -c %a \"$f\") \"$f\" \"/usr/local/$f\"; done; cd /")
     return vm, ser
 
 
@@ -120,6 +122,9 @@ def step_base(a):
         check("группы: user не в wheel/input/video", not re.search(r"\b(wheel|input|video)\b", out.split("\n", 1)[-1]))
         rc, out = run(ser, "doas sh -c 'grep -c . /sys/kernel/security/apparmor/profiles; cat /sys/kernel/security/apparmor/profiles'")
         check("профили AppArmor загружены", "vh.firefox" in out and "vh.unbound" in out)
+        rc, out = run(ser, "install -m 0755 /root/vh/tools/vh-bench /tmp/vh-bench && "
+                           + as_user("admin", "cd /tmp && sh /tmp/vh-bench"), timeout=900)
+        check("tools/vh-bench работает (dash)", "Отчёт:" in out and "zstd" in out, out[-500:].replace("\n", " | "))
         rc, out = run(ser, "doas sh -c 'grep -ah vh-acpid /var/log/socklog/*/current | tail -3'")
         check("vh-acpid нашёл кнопку питания", "power:" in out)
     finally:
@@ -176,11 +181,13 @@ def step_desktop(a):
         "XDG_RUNTIME_DIR=/run/user/$(id -u user) PATH=/usr/local/bin:/usr/bin LANG=C.UTF-8"
     try:
         # тестовый стенд: доступ к card0 вместо seatd (scenefx нужен EGL; в VM — kms_swrast)
-        run(ser, "install -d -m 0700 -o user -g user /run/user/$(id -u user); setfacl -m u:user:rw /dev/dri/card0")
+        run(ser, "install -d -m 0700 -o user -g user /run/user/$(id -u user); setfacl -m u:user:rw /dev/dri/card0; "
+                 "chmod 2750 /run/vh-sandbox; ls -ld /run/vh-sandbox")   # как 11-vh-runtime.sh: стенд мог быть старше
         rc, out = run(ser, f"{U} WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 "
                            "sh -c 'mango >/tmp/vh-mango.log 2>&1 &'; sleep 25; doas ls -l /run/vh-sandbox; "
                            "pgrep -u user -l . | sort -k2 | uniq -f1")
         check("mango (headless) запустился, vh-wlfilter создал сокет", "wayland" in out and "mango" in out)
+        check("сокеты песочницы: группа browser, 0660", re.search(r"srw-rw---- 1 user browser .* wayland", out) is not None)
         check("netline запущен", "netline" in out)
         rc, out = run(ser, f"{U} WAYLAND_DISPLAY=wayland-0 sh -c 'vh-browse untrusted >/tmp/vh-ff.log 2>&1 &'; "
                            "sleep 90; pgrep -u browser -l firefox | head; "
