@@ -17,7 +17,7 @@ cat <<EOT
 Режим: ${mode:-enforce}. Действует для mango, запущенного после этого (выйдите из сеанса).
 Журнал отказов: doas svlogtail kernel | grep 'apparmor="\(DENIED\|ALLOWED\)".*vh.mango'
 Проверка в enforce (из терминала foot):
-  ls \$XDG_RUNTIME_DIR/mango-*.sock && python3 -c 'import socket,glob,os;s=socket.socket(socket.AF_UNIX);s.connect(glob.glob(os.environ["XDG_RUNTIME_DIR"]+"/mango-*.sock")[0])'  → Permission denied
+  mmsg get version → отказ в подключении к сокету mango (Permission denied)
   unshare -U true → Operation not permitted;   панель netline и swaylock работают
 Если сеанс не стартует: войдите админом на tty2 и выполните disable.
 EOT

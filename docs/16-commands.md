@@ -52,6 +52,8 @@
 | `./install/10-install.sh --config ДРУГОЙ.conf` | установка с другим файлом настроек |
 | `./install/build-netline.sh /mnt` | собрать и поставить netline в смонтированную систему (установщик делает это сам при `VH_NETLINE=yes`) |
 
+| `install/build-tools.sh /mnt` | собрать инструменты на C в RAM live-среды и поставить в систему ([17](17-c-tools.md)); повторный запуск после `git pull` обновляет их |
+
 `install/chroot.sh` и `install/lib.sh` руками не запускаются — их вызывает `10-install.sh`.
 
 Полезное в live при проблемах:
@@ -353,6 +355,7 @@ Limine — правка руками сломает загрузку).
 | `doas udevadm control --reload && doas udevadm trigger` | применить правила udev |
 | `doas svlogtail auth` | входы и неудачные попытки |
 | `doas -s` | root-шелл (TMOUT 600, история не пишется) |
+| `doas apparmor_parser -r -C /etc/apparmor.d/ПРОФИЛЬ` | перевести профиль в complain (вместо `aa-complain`: Python-утилит AppArmor в системе нет) |
 
 Правка `doas.conf`: `doas doas -C /etc/doas.conf` проверяет синтаксис до выхода из
 редактора — без этого можно остаться без `doas` (тогда — [раздел 13](#13-восстановление-с-флешки)).
@@ -516,7 +519,8 @@ cryptsetup close cryptroot
 ```
 
 Обновить netline из live: после `cryptsetup open` и `mount` (без chroot) —
-`./install/build-netline.sh /mnt`.
+`./install/build-netline.sh /mnt`. Так же обновляются инструменты на C (компилятора в
+системе нет): `./install/build-tools.sh /mnt`.
 
 Если сломан заголовок LUKS — `cryptsetup luksHeaderRestore /dev/nvme0n1p2
 --header-backup-file luks-header.img` из резервной копии ([01-disk.md](01-disk.md)).
@@ -596,8 +600,10 @@ cryptsetup close cryptroot
 | `python3 tests/vm/vhvm.py install --iso VOID.iso [--netline] [--conf 'VH_X="y"']` | установить систему в qemu (OVMF с Secure Boot, swtpm, NVMe) |
 | `python3 tests/vm/vhvm.py boot` | загрузить установленную VM |
 | `python3 tests/vm/vhvm.py shell --run 'КОМАНДА'` | загрузить и выполнить команды через последовательную консоль |
-| `python3 tests/vm/check.py ШАГ [--repo]` | проверка: `base`, `enroll`, `sb`, `lock`, `desktop`, `strictnet`, `deadman`, `deadmandump`, `totp`, `modules`, `pkg`. `--repo` — сначала обновить скрипты в VM из рабочей копии |
+| `sh tests/c/run.sh [--fuzz N]` | инструменты на C: сборка, дифференциальные тесты против Python-эталона, фаззинг прокси под ASan (нужен docker) |
+| `sh tests/c/build.sh` | собрать инструменты на C в `build/` для `check.py --repo` |
+| `python3 tests/vm/check.py ШАГ [--repo]` | проверка: `base`, `ctools`, `enroll`, `sb`, `lock`, `desktop`, `strictnet`, `deadman`, `deadmandump`, `totp`, `modules`, `pkg`. `--repo` — сначала обновить скрипты в VM из рабочей копии |
 
 Общие ключи стенда: `--dir КАТАЛОГ` (по умолчанию `tests/vm/work`), `--mem`, `--smp`.
-`tools/vh-hashpw` — хэш пароля для автоматической установки на стенде, на настоящем
+`vh-hashpw` (`src/vh-hashpw.c`) — хэш пароля для автоматической установки на стенде, на настоящем
 железе не нужен.

@@ -163,7 +163,7 @@ say "SUID и capabilities"
 say "пароли"
 if [ -n "${VH_TEST_PASSWORD:-}" ]; then
 	# автотесты в VM: один и тот же пароль у обоих
-	h=$(printf '%s' "$VH_TEST_PASSWORD" | python3 -I /root/vh/tools/vh-hashpw 7)
+	h=$(printf '%s' "$VH_TEST_PASSWORD" | /root/vh/tools/vh-hashpw 7)
 	usermod -p "$h" "$VH_ADMIN"
 	usermod -p "$h" "$VH_USER"
 else

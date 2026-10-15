@@ -13,13 +13,13 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 chmod 0755 "$tmp"
 for u in $(sed -n 's/^[[:space:]]*forward-addr:[[:space:]]*\([^[:space:]]*\).*/\1/p' /etc/unbound/unbound.conf); do
 	ip=${u%%@*} name=${u##*#}
-	as _unbound python3 -I "$FETCH" "$ip" 853 "$name" > "$tmp/dot-$ip.pem" || die "не получить цепочку $u"
+	as _unbound "$FETCH" "$ip" 853 "$name" > "$tmp/dot-$ip.pem" || die "не получить цепочку $u"
 done
 cat "$tmp"/dot-*.pem | awk '/BEGIN/{c=$0; next} {c=c"\n"$0} /END/{if(!seen[c]++) print c}' > "$tmp/dot.pem"
 
 say "NTS: корни УЦ серверов chrony (подключение от chrony на 4460)"
 for s in $(awk '$1 == "server" && / nts/ {print $2}' /etc/chrony.conf); do
-	as chrony python3 -I "$FETCH" "$s" 4460 "$s" ntske/1 > "$tmp/nts-$s.pem" || die "не получить цепочку $s"
+	as chrony "$FETCH" "$s" 4460 "$s" ntske/1 > "$tmp/nts-$s.pem" || die "не получить цепочку $s"
 done
 cat "$tmp"/nts-*.pem | awk '/BEGIN/{c=$0; next} {c=c"\n"$0} /END/{if(!seen[c]++) print c}' > "$tmp/nts.pem"
 

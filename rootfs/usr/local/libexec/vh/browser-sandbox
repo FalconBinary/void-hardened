@@ -28,7 +28,7 @@ mkdir -m 0700 "$work/tmp" "$work/shm" "$work/run"
 # без MPTCP, SCTP, AF_ALG, AF_PACKET, NETLINK_NETFILTER; без TCP_ULP и BPF на сокетах,
 # монтирования, keyctl, bpf, perf, clone с новыми namespace. bwrap применяет его после
 # сборки песочницы, его наследуют все процессы Firefox поверх их собственного фильтра.
-python3 -I /usr/local/libexec/vh/vh-seccomp browser > "$work/seccomp.bpf"
+/usr/local/libexec/vh/vh-seccomp browser > "$work/seccomp.bpf"
 printf '%s:x:%s:%s::%s:/usr/bin/nologin\n' "$user" "$uid" "$gid" "$h" > "$work/passwd"
 printf '%s:x:%s:\n' "$user" "$gid" > "$work/group"
 

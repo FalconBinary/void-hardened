@@ -244,7 +244,7 @@ cd void-hardened
 ```
 
 Скрипт ничего не пишет на диски. `--install-tools` ставит в live-среду (в RAM)
-`pciutils usbutils tpm2-tools nvme-cli iw efibootmgr python3`. Отчёт — в
+`pciutils usbutils tpm2-tools nvme-cli iw efibootmgr dmidecode`. Отчёт — в
 `/tmp/vh-probe-<дата>.txt`; в конце — список рекомендаций. Скопируйте отчёт на
 флешку или отправьте себе: после перезагрузки /tmp исчезнет.
 
@@ -272,6 +272,8 @@ python3 tests/vm/vhvm.py install --iso void-live-x86_64-20250202-base.iso --netl
 python3 tests/vm/check.py all             # base, enroll, sb, lock, desktop
 python3 tests/vm/check.py deadman         # дамп RAM после выключения: без модуля и с ним
 python3 tests/vm/check.py totp --repo     # tpm2-totp на swtpm (--repo: свежие файлы в VM)
+sh tests/c/build.sh                       # инструменты на C для --repo (через docker)
+sh tests/c/run.sh                         # тесты инструментов на C против Python-эталона (docs/17)
 ```
 
 Стенд поднимает VM с NVMe-диском, пустой прошивкой в Setup Mode и TPM, грузит

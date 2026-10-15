@@ -81,6 +81,8 @@ def boot(a, extra=None):
     if getattr(a, "repo", False):
         # свежая копия репозитория — «сырым» tar на втором NVMe: после 30-lock.sh модуль
         # isofs не загрузить (modules_disabled), а драйвер NVMe встроен в ядро
+        if not os.path.isfile(os.path.join(vhvm.REPO, "build", "vh-seccomp")):
+            sys.exit("нет build/ — соберите инструменты на C: sh tests/c/build.sh")
         tar = os.path.join(vm.d, "repo.tar")
         flags = ["--no-xattrs"] + (["--no-fflags", "--no-mac-metadata"] if sys.platform == "darwin" else [])
         subprocess.run(["tar", *flags, "-cf", tar, "--exclude", ".git", "--exclude", "__pycache__",
@@ -107,9 +109,13 @@ def boot(a, extra=None):
         run(ser, "rm -rf /tmp/vhn && mkdir /tmp/vhn && "
                  "tar -xf $(readlink -f /dev/disk/by-id/nvme-*VHREPO* | head -1) -C /tmp/vhn && "
                  "cp -a /tmp/vhn/void-hardened/install /tmp/vhn/void-hardened/optional "
-                 "/tmp/vhn/void-hardened/rootfs /tmp/vhn/void-hardened/tools /root/vh/ && "
+                 "/tmp/vhn/void-hardened/rootfs /tmp/vhn/void-hardened/tools /tmp/vhn/void-hardened/src /root/vh/ && "
                  "cd /tmp/vhn/void-hardened/rootfs/usr/local && find . -type f ! -name '*.in' | "
-                 "while read f; do install -m $(stat -c %a \"$f\") \"$f\" \"/usr/local/$f\"; done; cd /")
+                 "while read f; do install -m $(stat -c %a \"$f\") \"$f\" \"/usr/local/$f\"; done; cd / && "
+                 "bash /root/vh/install/build-tools.sh --prebuilt /tmp/vhn/void-hardened/build / >/dev/null && "
+                 # система без python3 (docs/17): ignorepkg и удаление, если стоял с прошлой установки
+                 "install -m 0644 /tmp/vhn/void-hardened/rootfs/etc/xbps.d/20-vh-ignorepkg.conf /etc/xbps.d/ && "
+                 "{ xbps-remove -Fy python3 >/dev/null 2>&1; true; }")
     return vm, ser
 
 
@@ -155,6 +161,43 @@ def step_base(a):
         check("tools/vh-bench работает (dash)", "Отчёт:" in out and "zstd" in out, out[-500:].replace("\n", " | "))
         rc, out = run(ser, "doas sh -c 'grep -ah vh-acpid /var/log/socklog/*/current | tail -3'")
         check("vh-acpid нашёл кнопку питания", "power:" in out)
+    finally:
+        shutdown(vm, ser)
+
+
+def step_ctools(a):
+    """Инструменты на C в настоящей системе: ELF без python3, демоны, пересборка UKI
+    через vh-limine-update и загрузка с новой UKI (docs/17)."""
+    vm, ser = boot(a)
+    try:
+        rc, out = run(ser, "command -v python3 perl || echo NO_INTERPRETERS; "
+                           "for f in /usr/local/bin/vh-wlfilter /usr/local/sbin/vh-acpid /usr/local/sbin/vh-limine-update "
+                           "/usr/local/sbin/vh-pkg /usr/local/libexec/vh/vh-seccomp; do "
+                           "printf '%s ' $f; head -c 4 $f | od -An -c | tr -d ' \\n'; echo; done")
+        check("нет python3 и perl", "NO_INTERPRETERS" in out, out[-200:])
+        check("инструменты — ELF", out.count("177ELF") == 5, out[-400:].replace("\n", " | "))
+        rc, out = run(ser, "/usr/local/libexec/vh/vh-seccomp --selftest")
+        check("vh-seccomp --selftest (C)", rc == 0 and "selftest: OK" in out)
+        rc, out = run(ser, "sv restart vh-acpid; sleep 3; sv status vh-acpid; "
+                           "grep -ah vh-acpid /var/log/socklog/*/current | tail -6; grep VmRSS /proc/$(pgrep -x vh-acpid)/status")
+        check("vh-acpid (C) работает и нашёл кнопку питания", "run: vh-acpid" in out and "power:" in out,
+              out[-300:].replace("\n", " | "))
+        rc, out = run(ser, "xbps-reconfigure -f $(. /etc/vh/vh.env; echo $VH_KERNEL) 2>&1 | tail -8", timeout=1800)
+        check("xbps-reconfigure ядра → vh-limine-update (C)", "вписан в Limine" in out, out[-500:].replace("\n", " | "))
+        rc, out = run(ser, "mount -o ro /boot/efi && sbctl verify; r=$?; grep -c '#' /boot/efi/EFI/BOOT/limine.conf; "
+                           "umount /boot/efi; test $r = 0")
+        check("после пересборки всё подписано", rc == 0 and "not signed" not in out, out[-300:].replace("\n", " | "))
+        rc, out = run(ser, "doas vh-audit", timeout=600)
+        m = re.search(r"Итог: ok (\d+), FAIL (\d+), не проверено (\d+)", out)
+        fails = [l for l in out.splitlines() if l.startswith("[FAIL]")]
+        check("vh-audit без FAIL (в том числе «нет интерпретаторов»)", m is not None and m.group(2) == "0",
+              (m.group(0) if m else "нет итога") + " | " + " | ".join(fails))
+    finally:
+        shutdown(vm, ser)
+    vm, ser = boot(a)                     # загрузка с UKI и Limine, записанными C-версией
+    try:
+        rc, out = run(ser, "cat /proc/cmdline; sv status vh-acpid")
+        check("загрузка после пересборки UKI", "lockdown=confidentiality" in out and "run: vh-acpid" in out)
     finally:
         shutdown(vm, ser)
 
@@ -275,6 +318,11 @@ def find_in_dump(path, needles):
     return found
 
 
+# Искомые строки тоже собираются из частей: с --repo этот файл распаковывается
+# в VM, и целая строка в исходнике нашлась бы в дампе как ложный маркер.
+MARK_READ, MARK_PROC, MARK_DIRTY = (("VH" + "MARK" + s).encode() for s in ("_READ_7f3a", "_PROC_91c2", "_DIRTY_c40e"))
+
+
 def dump_after_poweroff(a, tag, prepare_cmds):
     """Загрузить, выполнить команды, выключить; VM вместо перезагрузки/выключения
     встаёт на паузу — снять дамп RAM и искать ключ тома и маркеры."""
@@ -302,7 +350,7 @@ def dump_after_poweroff(a, tag, prepare_cmds):
             last = sz
         import mmap
         with open(dump, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
-            for needle in (b"VHMARK_READ_7f3a", b"VHMARK_PROC_91c2", b"VHMARK_DIRTY_c40e"):
+            for needle in (MARK_READ, MARK_PROC, MARK_DIRTY):
                 pos, n = m.find(needle), 0
                 while pos >= 0 and n < 3:
                     ctx = m[max(0, pos - 120):pos + 40]
@@ -310,9 +358,9 @@ def dump_after_poweroff(a, tag, prepare_cmds):
                     pos, n = m.find(needle, pos + len(needle)), n + 1
         res = find_in_dump(dump, {
             "ключ тома (первые 32 байта)": key[:32] if key else b"\x00NOKEY\x00",
-            "маркер прочитанного файла": b"VHMARK_READ_7f3a",
-            "маркер памяти процесса": b"VHMARK_PROC_91c2",
-            "маркер записанного файла": b"VHMARK_DIRTY_c40e",
+            "маркер прочитанного файла": MARK_READ,
+            "маркер памяти процесса": MARK_PROC,
+            "маркер записанного файла": MARK_DIRTY,
         })
         os.remove(dump)
         return bool(key), res
@@ -326,7 +374,8 @@ def dump_after_poweroff(a, tag, prepare_cmds):
 # и тест находил бы маркер там, а не в данных)
 MARKERS = [
     "a=VHMARK; printf \"${a}_READ_7f3a%.0s\" $(seq 1 2000) > /home/admin/read.txt; sync; cat /home/admin/read.txt >/dev/null",
-    "( python3 -c 'import time; s=(\"VHMARK\"+\"_PROC_91c2\")*4000; time.sleep(9999)' & )",
+    # маркер в куче процесса: строка живёт в памяти bash, пока он ждёт sleep
+    "( a=VHMARK; m=$(printf \"${a}_PROC_91c2%.0s\" $(seq 1 4000)); sleep 9999; echo ${#m} ) &",
     "a=VHMARK; printf \"${a}_DIRTY_c40e%.0s\" $(seq 1 2000) > /home/admin/dirty.txt",
 ]
 
@@ -440,11 +489,8 @@ def step_modules(a):
         rc, out = run(ser, as_user("user", "touch /home/user/Documents/x && echo ok"))
         check("home-lockdown: ~/Documents записываем", rc == 0)
         run(ser, "/root/vh/optional/home-lockdown/disable")
-        rc, out = run(ser, "VH_AA_MODE=', complain' python3 -I - <<'PY'\n"
-                           "import os,re\n"
-                           "t=open('/root/vh/optional/session-apparmor/vh.local.session').read()\n"
-                           "open('/tmp/vh.session.aa','w').write(t.replace('@VH_AA_MODE@',', complain'))\n"
-                           "PY\napparmor_parser -Q -K /tmp/vh.session.aa")
+        rc, out = run(ser, "sed 's/@VH_AA_MODE@/, complain/' /root/vh/optional/session-apparmor/vh.local.session "
+                           "> /tmp/vh.session.aa && apparmor_parser -Q -K /tmp/vh.session.aa")
         check("session-apparmor: профиль компилируется", rc == 0, out[-300:].replace("\n", " "))
     finally:
         shutdown(vm, ser)
@@ -483,14 +529,14 @@ def step_pkg(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["base", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "deadmandump", "totp", "modules", "pkg", "all"])
+    ap.add_argument("step", choices=["base", "ctools", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "deadmandump", "totp", "modules", "pkg", "all"])
     ap.add_argument("--dir", default=os.path.join(vhvm.REPO, "tests", "vm", "work"))
     ap.add_argument("--mem", type=int, default=3072)
     ap.add_argument("--smp", type=int, default=4)
     ap.add_argument("--user", default="admin")
     ap.add_argument("--repo", action="store_true", help="обновить /root/vh в системе из рабочей копии")
     a = ap.parse_args()
-    steps = {"base": [step_base], "enroll": [step_enroll], "sb": [step_sb], "lock": [step_lock],
+    steps = {"base": [step_base], "ctools": [step_ctools], "enroll": [step_enroll], "sb": [step_sb], "lock": [step_lock],
              "desktop": [step_desktop], "strictnet": [step_strictnet], "deadman": [step_deadman],
              "totp": [step_totp], "modules": [step_modules], "pkg": [step_pkg], "deadmandump": [step_deadmandump],
              "all": [step_base, step_enroll, step_sb, step_lock, step_desktop]}[a.step]

@@ -16,7 +16,7 @@ need_root
 if [ "${1:-}" = "--install-tools" ]; then
 	say "ставлю утилиты в live-среду (только RAM)"
 	xbps-install -Syu xbps >/dev/null 2>&1
-	xbps-install -Sy pciutils usbutils tpm2-tools nvme-cli iw efibootmgr python3 dmidecode \
+	xbps-install -Sy pciutils usbutils tpm2-tools nvme-cli iw efibootmgr dmidecode \
 		|| warn "не все утилиты установились (нет сети?)"
 fi
 

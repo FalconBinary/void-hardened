@@ -3,7 +3,7 @@
 #   sh tools/vh-bench          — CPU, память, простой, загрузка
 #   sh tools/vh-bench --fio    — плюс накопитель (нужен fio; 2 ГБ во временном файле в $HOME)
 # Запускать от обычного пользователя, от сети, с закрытым браузером. Повторить 3 раза.
-# Нужны: zstd, python3 (есть и в Void, и в CachyOS). Ничего не устанавливает.
+# Нужны: zstd, gawk, coreutils (есть и в Void, и в CachyOS). Ничего не устанавливает.
 set -u
 LC_ALL=C; export LC_ALL
 FIO=0; [ "${1:-}" = --fio ] && FIO=1
@@ -47,36 +47,24 @@ echo "прерываний в секунду: $(( (b - a) / 30 ))"
 
 sec "CPU и память: zstd (выше — лучше)"
 if have zstd; then
-	tmp=$(mktemp -d)
-	# корпус: исходники python stdlib — реальные тексты, одинаковые в обеих системах
-	py=$(python3 -c 'import sysconfig;print(sysconfig.get_paths()["stdlib"])' 2>/dev/null)
-	tar -cf "$tmp/corpus.tar" -C "$py" . 2>/dev/null
-	echo "корпус: $(du -m "$tmp/corpus.tar" | cut -f1) МиБ"
+	# корпус — встроенные синтетические данные zstd (без файла): одинаковы в обеих системах
 	echo "-- многопоточно, уровень 3:"
-	zstd -b3 -e3 -T0 -i5 "$tmp/corpus.tar" 2>&1 | tail -1
+	zstd -b3 -e3 -T0 -i5 -B64MiB 2>&1 | tr "\r" "\n" | grep "MB/s" | tail -1
 	echo "-- один поток, уровень 19:"
-	zstd -b19 -i3 "$tmp/corpus.tar" 2>&1 | tail -1
-	rm -rf "$tmp"
+	zstd -b19 -i3 2>&1 | tr "\r" "\n" | grep "MB/s" | tail -1
 else
 	echo "нет zstd"
 fi
 
-sec "Интерпретатор: python3 (меньше — лучше)"
-python3 -I - <<'PY'
-import time, json, re, hashlib
-def bench(name, f, n=5):
-    best = 1e9
-    for _ in range(n):
-        t = time.perf_counter(); f(); best = min(best, time.perf_counter() - t)
-    print(f"{name:12s} {best*1000:8.1f} мс")
-bench("циклы", lambda: sum(i * i for i in range(2_000_000)))
-data = [{"id": i, "name": f"item{i}", "tags": ["a", "b", "c"]} for i in range(50_000)]
-bench("json", lambda: json.loads(json.dumps(data)))
-text = "lorem ipsum dolor sit amet " * 40_000
-bench("regex", lambda: len(re.findall(r"\b\w+or\w*\b", text)))
-blob = b"x" * (64 << 20)
-bench("sha256", lambda: hashlib.sha256(blob).hexdigest())
-PY
+sec "Один поток: awk и sha256 (меньше — лучше)"
+# лучший из 3 прогонов; gawk и coreutils есть в обеих системах (интерпретаторов вроде
+# python3 в этой системе нет намеренно — docs/17)
+ms() { a=$(date +%s%N); "$@" >/dev/null 2>&1; b=$(date +%s%N); echo $(( (b - a) / 1000000 )); }
+best() { name=$1; shift; m=999999; for _ in 1 2 3; do t=$(ms "$@"); [ "$t" -lt "$m" ] && m=$t; done; printf '%-14s %6s мс\n' "$name" "$m"; }
+best "циклы awk" awk 'BEGIN { for (i = 0; i < 3000000; i++) s += i * i; print s }'
+best "строки awk" awk 'BEGIN { for (i = 0; i < 300000; i++) { a[i % 1000] = a[i % 1000] "x"; s = s sprintf("%d", i) } print length(s) }'
+best "regex awk" awk 'BEGIN { t = "lorem ipsum dolor sit amet"; for (i = 0; i < 300000; i++) n += match(t " " i, /[a-z]+or[a-z]* [0-9]+$/); print n }'
+best "sha256 256 МБ" sh -c 'head -c 268435456 /dev/zero | sha256sum'
 
 if [ "$FIO" = 1 ]; then
 	sec "Накопитель: fio (выше — лучше)"

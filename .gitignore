@@ -1,3 +1,4 @@
 tests/vm/work/
 vh.conf
 __pycache__/
+build/

@@ -10,7 +10,7 @@ vh_packages() {
 		coreutils findutils diffutils dash bash grep gzip sed gawk less which tar
 		util-linux shadow procps-ng iana-etc tzdata glibc-locales ncurses kbd
 		kmod eudev iproute2 iputils libcap-progs ethtool iw pciutils usbutils
-		mdocml man-pages nvi python3
+		mdocml man-pages nvi
 		# --- ядро, прошивки, микрокод
 		"$VH_KERNEL" linux-firmware-intel linux-firmware-network wireless-regdb intel-ucode
 		# --- загрузка: UKI, Secure Boot, шифрование, ФС

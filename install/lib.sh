@@ -95,27 +95,26 @@ part() {
 # Неизвестная подстановка — ошибка (чтобы не оставить «@X@» в конфиге).
 render() {
 	local src=$1 dst=$2 mode=${3:-0644}
-	python3 -I - "$src" "$dst" "$mode" <<'PY'
-import os, re, sys
-src, dst, mode = sys.argv[1], sys.argv[2], int(sys.argv[3], 8)
-text = open(src, encoding="utf-8").read()
-missing = []
-def sub(m):
-    name = m.group(1)
-    if name not in os.environ:
-        missing.append(name)
-        return m.group(0)
-    return os.environ[name]
-out = re.sub(r"@([A-Z][A-Z0-9_]*)@", sub, text)
-if missing:
-    sys.exit(f"render {src}: не заданы {', '.join(sorted(set(missing)))}")
-os.makedirs(os.path.dirname(dst), exist_ok=True)
-tmp = dst + ".vhtmp"
-with open(tmp, "w", encoding="utf-8") as f:
-    f.write(out)
-os.chmod(tmp, mode)
-os.replace(tmp, dst)
-PY
+	mkdir -p "$(dirname "$dst")"
+	awk -v src="$src" '
+	{
+		out = ""; s = $0
+		while (match(s, /@[A-Z][A-Z0-9_]*@/)) {
+			name = substr(s, RSTART + 1, RLENGTH - 2)
+			if (name in ENVIRON) val = ENVIRON[name]
+			else { missing[name] = 1; val = substr(s, RSTART, RLENGTH) }
+			out = out substr(s, 1, RSTART - 1) val
+			s = substr(s, RSTART + RLENGTH)
+		}
+		print out s
+	}
+	END {
+		n = 0
+		for (m in missing) list = list (n++ ? ", " : "") m
+		if (n) { print "render " src ": не заданы " list > "/dev/stderr"; exit 1 }
+	}' "$src" > "$dst.vhtmp" || { rm -f "$dst.vhtmp"; return 1; }
+	chmod "$mode" "$dst.vhtmp"
+	mv -f "$dst.vhtmp" "$dst"
 }
 
 # Копирует дерево rootfs/ в корень ROOT: файлы *.in проходят через render,

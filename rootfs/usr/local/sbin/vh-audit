@@ -50,8 +50,16 @@ fi
 for m in fuse overlay; do
 	grep -q "^$m " /proc/modules && bad "загружен модуль $m" || ok "модуль $m не загружен"
 done
-python3 -I /usr/local/libexec/vh/vh-seccomp --selftest >/dev/null 2>&1 \
+/usr/local/libexec/vh/vh-seccomp --selftest >/dev/null 2>&1 \
 	&& ok "фильтры seccomp песочниц: самопроверка" || bad "vh-seccomp --selftest не прошёл"
+# интерпретатор с FFI (ctypes) создаёт исполняемую память и обходит noexec; компилятор
+# соберёт инструмент на месте — ни того, ни другого в системе нет (docs/05)
+found=""
+for b in python3 perl ruby node luajit gcc cc clang tcc; do
+	command -v "$b" >/dev/null 2>&1 && found="$found $b"
+done
+[ -z "$found" ] && ok "нет интерпретаторов с FFI и компиляторов (noexec не обойти)" \
+	|| bad "установлены:$found — обходят noexec (docs/05), удалить: doas vh-pkg rm"
 grep -q . /sys/kernel/security/apparmor/profiles 2>/dev/null && \
 	ok "профили AppArmor: $(wc -l < /sys/kernel/security/apparmor/profiles)" || unk "профилей AppArmor нет"
 

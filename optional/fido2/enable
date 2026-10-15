@@ -57,29 +57,32 @@ udevadm control --reload
 
 say "PAM: вход и doas — пароль И ключ с PIN; swaylock — пароль И касание"
 for f in /etc/pam.d/system-login /etc/pam.d/doas /etc/pam.d/swaylock; do save_orig "$f"; done
-python3 -I - "$U2F" <<'PY'
-import re, sys
-u2f = sys.argv[1]
-block = (
-    "auth       required                pam_faillock.so preauth\n"
-    "auth       [success=1 default=bad] pam_unix.so     try_first_pass\n"
-    "auth       [default=die]           pam_faillock.so authfail\n"
-    f"auth       [success=1 default=bad] {u2f} pinverification=1\n"
-    "auth       [default=die]           pam_faillock.so authfail\n"
-    "auth       required                pam_permit.so\n")
-for path in ("/etc/pam.d/system-login", "/etc/pam.d/doas"):
-    s = open(path).read()
-    new = re.sub(r"auth\s+required\s+pam_faillock\.so preauth\n"
-                 r"auth\s+sufficient\s+pam_unix\.so\s+try_first_pass\n"
-                 r"auth\s+\[default=die\]\s+pam_faillock\.so authfail\n", block, s)
-    if new == s:
-        sys.exit(f"{path}: не найден стек auth базового слоя — правьте вручную (docs/13)")
-    open(path, "w").write(new)
-s = open("/etc/pam.d/swaylock").read()
-if "pam_u2f.so" not in s:
-    s += f"# второй фактор: касание ключа без PIN (optional/fido2)\nauth       required   {u2f} pinverification=0\n"
-    open("/etc/pam.d/swaylock", "w").write(s)
-PY
+# стек auth базового слоя (три строки подряд) → пароль И ключ с PIN
+for f in /etc/pam.d/system-login /etc/pam.d/doas; do
+	awk -v u2f="$U2F" '
+		{ l[NR] = $0 }
+		END {
+			for (i = 1; i <= NR; i++) {
+				if (i + 2 <= NR && l[i] ~ /^auth[ \t]+required[ \t]+pam_faillock\.so preauth$/ &&
+				    l[i + 1] ~ /^auth[ \t]+sufficient[ \t]+pam_unix\.so[ \t]+try_first_pass$/ &&
+				    l[i + 2] ~ /^auth[ \t]+\[default=die\][ \t]+pam_faillock\.so authfail$/) {
+					print "auth       required                pam_faillock.so preauth"
+					print "auth       [success=1 default=bad] pam_unix.so     try_first_pass"
+					print "auth       [default=die]           pam_faillock.so authfail"
+					print "auth       [success=1 default=bad] " u2f " pinverification=1"
+					print "auth       [default=die]           pam_faillock.so authfail"
+					print "auth       required                pam_permit.so"
+					i += 2; found = 1
+				} else print l[i]
+			}
+			exit !found
+		}' "$f" > "$f.vhnew" || { rm -f "$f.vhnew"; die "$f: не найден стек auth базового слоя — правьте вручную (docs/13)"; }
+	cat "$f.vhnew" > "$f" && rm -f "$f.vhnew"
+done
+if ! grep -q pam_u2f.so /etc/pam.d/swaylock; then
+	printf '# второй фактор: касание ключа без PIN (optional/fido2)\nauth       required   %s pinverification=0\n' \
+		"$U2F" >> /etc/pam.d/swaylock
+fi
 mark_enabled
 cat <<EOT
 

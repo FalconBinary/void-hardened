@@ -103,6 +103,24 @@ unbound и chrony проверяют сертификаты по системн�
 (`optional/dns-pin`), новый УЦ вносится вручную после сверки отпечатка по второму
 каналу. Временно отключать проверку сертификатов — запрещено.
 
+## 7. Обновление своих программ (netline и инструменты на C)
+
+`vh-update` обновляет пакеты Void. Свои программы проекта — панель netline (Zig) и
+инструменты на C (`vh-wlfilter`, `vh-acpid`, `vh-limine-update` и др.) — в пакетах их нет.
+Компилятора в системе тоже нет, поэтому новые версии собираются с live-флешки:
+
+```sh
+# [LIVE]
+cryptsetup open /dev/nvme0n1p2 cryptroot && mount /dev/mapper/cryptroot /mnt
+cd void-hardened && git pull
+./install/build-tools.sh /mnt       # инструменты на C (docs/17)
+./install/build-netline.sh /mnt     # netline
+umount /mnt && cryptsetup close cryptroot
+```
+
+Если обновился `vh-limine-update`, после загрузки выполните
+`doas xbps-reconfigure -f linux6.18`.
+
 ## Итог главы
 
 | Защищает от | Остаточный риск | Цена в скорости | Цена в удобстве |

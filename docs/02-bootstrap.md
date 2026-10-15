@@ -44,6 +44,7 @@ nonfree нужен ради одного пакета — `intel-ucode` (зак�
 | Пакет | Кто тянет | Почему не нужен |
 |---|---|---|
 | python3-tkinter, -gobject, -dbus, -notify2, -psutil | apparmor | нужны только графическим утилитам (aa-notify); `apparmor_parser` и `aa-status` — на C |
+| python3 | apparmor, nftables | нужен только их Python-обвязкам; интерпретатор с FFI обходит noexec, а инструменты системы на C ([17](17-c-tools.md)) |
 | openresolv | iwd, wireguard-tools | `resolv.conf` статический (127.0.0.1), его никто не переписывает |
 | sudo | — (страховка) | администрирование через opendoas: в нём на порядки меньше кода, чем в sudo |
 
@@ -112,7 +113,7 @@ ICMP-сокеты для группы `netdiag` ([05](05-system.md)).
 | Защита | opendoas dumb_runtime_dir apparmor bubblewrap acl-progs | doas, `/run/user/UID`, MAC, песочницы, ACL каталога обмена |
 | Сеть и время | dbus iwd nftables unbound chrony (+ dhcpcd при VH_ETH=dhcp) | Wi-Fi, файрвол, DNS, NTS |
 | Журналы | socklog-void | syslog и журнал ядра в `/var/log/socklog` |
-| Рабочий стол | seatd mangowc foot swaylock swayidle wl-clipboard mesa-dri intel-media-driver pipewire wireplumber alsa-utils firefox dejavu-fonts-ttf python3 | сеанс, графика, видео, звук, браузер; python3 — для своих инструментов |
+| Рабочий стол | seatd mangowc foot swaylock swayidle wl-clipboard mesa-dri intel-media-driver pipewire wireplumber alsa-utils firefox dejavu-fonts-ttf | сеанс, графика, видео, звук, браузер; python3 — для своих инструментов |
 
 `dracut-uefi` тянет `binutils` (`objcopy` собирает UKI). В нём есть ассемблер `as` и
 компоновщик `ld` — правило «компиляторов нет» выполняется не полностью. Компилятора C

@@ -31,10 +31,11 @@ case ${1:-} in
 		fi
 		for s in root_https people_tmp dns_tmp; do
 			printf '%s: ' "$s"
-			nft -j list set inet vh "$s" | python3 -I -c 'import json,sys
-d=json.load(sys.stdin)["nftables"]
-el=[e for x in d if "set" in x for e in x["set"].get("elem",[])]
-print(", ".join(str(e["elem"]["val"])+" ("+str(e["elem"].get("expires","?"))+" с)" if isinstance(e,dict) else str(e) for e in el) or "—")'
+			# элементы set'а: «значение timeout … expires …» через запятую (может быть в несколько строк)
+			nft list set inet vh "$s" | awk '
+				/elements = \{/ { f = 1; sub(/.*elements = \{[ \t]*/, "") }
+				f { e = e " " $0; if (index($0, "}")) f = 0 }
+				END { sub(/[ \t]*\}.*/, "", e); gsub(/[ \t]+/, " ", e); sub(/^ /, "", e); print (e == "" ? "—" : e) }'
 		done ;;
 	xbps)
 		m=$(minutes "${2:-30}")

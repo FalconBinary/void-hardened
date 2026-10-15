@@ -70,7 +70,7 @@ EOF
 # ---------------------------------------------------------------- live-среда
 say "утилиты live-среды (ставятся в RAM)"
 run xbps-install -Syu xbps
-run xbps-install -Sy cryptsetup xfsprogs dosfstools python3
+run xbps-install -Sy cryptsetup xfsprogs dosfstools
 [ "$VH_NETLINE" = yes ] && run xbps-install -Sy git minisign xz
 
 # ---------------------------------------------------------------- разметка
@@ -182,7 +182,9 @@ say "файлы конфигурации (rootfs/)"
 install_tree "$VH_ROOT/rootfs" "$MNT"
 run install -d -m 0700 "$MNT/root/vh"
 run cp -a "$VH_ROOT/install" "$VH_ROOT/tools" "$VH_ROOT/rootfs" "$VH_ROOT/optional" \
-	"$VH_ROOT/vh.conf.example" "$MNT/root/vh/"
+	"$VH_ROOT/src" "$VH_ROOT/vh.conf.example" "$MNT/root/vh/"
+# инструменты на C: компилятор — только в RAM live-среды, в систему — готовые программы
+run bash "$VH_ROOT/install/build-tools.sh" "$MNT"
 [ -f "$CFG" ] && run install -m 0600 "$CFG" "$MNT/root/vh/vh.conf"
 if [ "$DRY_RUN" != 1 ]; then
 	printf 'VH_LUKS_UUID=%s\nVH_ROOT_UUID=%s\nVH_ESP_UUID=%s\nVH_DISK=%s\n' \
