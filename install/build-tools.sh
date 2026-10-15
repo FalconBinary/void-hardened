@@ -18,6 +18,7 @@ MAP=(
 	"vh-acpid         /usr/local/sbin/vh-acpid"
 	"vh-limine-update /usr/local/sbin/vh-limine-update"
 	"vh-pkg           /usr/local/sbin/vh-pkg"
+	"vh-deep-clean    /usr/local/sbin/vh-deep-clean"
 	"vh-hashpw        /root/vh/tools/vh-hashpw"
 	"vh-deadman       /root/vh/optional/deadman/vh-deadman             /usr/local/sbin/vh-deadman"
 	"vh-uki-verify    /root/vh/optional/sb-offline-keys/vh-uki-verify  /usr/local/sbin/vh-uki-verify"

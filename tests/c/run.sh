@@ -6,7 +6,8 @@
 #  2. vh-seccomp --selftest и побайтное совпадение фильтров с эталоном;
 #  3. дифференциальные тесты против Python-эталона (последняя Python-версия — коммит
 #     REF_COMMIT): vh-wlfilter, vh-limine-update, vh-uki-verify, vh-open, vh-usb-udev, vh-pkg;
-#  4. фаззинг vh-wlfilter под AddressSanitizer и UBSan (в контейнере родной архитектуры:
+#     vh-deep-clean (Python-версии нет) — tests/c/clean_test.sh: что удаляется, что остаётся;
+#  4. фаззинг vh-wlfilter и clean_test под AddressSanitizer и UBSan (в контейнере родной архитектуры:
 #     под эмуляцией x86 на Apple Silicon ASan не работает).
 # Контейнеры запускаются с --privileged (tmpfs вместо ESP, поддельный sysfs) и удаляются.
 set -eu
@@ -44,9 +45,11 @@ docker run --rm --platform linux/amd64 --privileged -v "$repo:/src:ro" -v "$ref:
 	sh /src/tests/c/open_diff.sh 'python3 -I /ref/vh-open' /tmp/b/vh-open /ref/vh-seccomp
 	sh /src/tests/c/usb_diff.sh 'python3 -I /ref/vh-usb-udev' /tmp/b/vh-usb-udev
 	sh /src/tests/c/pkg_diff.sh 'python3 -I /ref/vh-pkg' /tmp/b/vh-pkg
+	# последним: удаляет пакеты, кэш xbps, заводит пользователей
+	sh /src/tests/c/clean_test.sh /tmp/b
 "
 
-echo "== $(uname -m): фаззинг vh-wlfilter под ASan/UBSan ($FUZZ сценариев)"
+echo "== $(uname -m): под ASan/UBSan — фаззинг vh-wlfilter ($FUZZ сценариев), vh-deep-clean"
 docker run --rm --privileged -v "$repo:/src:ro" -v "$ref:/ref:ro" "$IMAGE" sh -c "
 	set -e
 	xbps-install -Syu xbps >/dev/null 2>&1; xbps-install -Sy $deps libsanitizer-devel >/dev/null 2>&1
@@ -58,4 +61,10 @@ docker run --rm --privileged -v "$repo:/src:ro" -v "$ref:/ref:ro" "$IMAGE" sh -c
 		exit 1
 	fi
 	tail -1 /tmp/fuzz.log
+	# vh-deep-clean под ASan/UBSan (утечки при выходе не считаются: память освобождает ОС)
+	if ! ASAN_OPTIONS=detect_leaks=0 sh /src/tests/c/clean_test.sh /tmp/asan > /tmp/clean.log 2>&1; then
+		grep -v '^ok ' /tmp/clean.log | tail -40
+		exit 1
+	fi
+	tail -1 /tmp/clean.log
 "

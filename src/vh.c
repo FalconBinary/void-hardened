@@ -517,3 +517,24 @@ int run(char *const argv[], const void *in, size_t inlen, struct buf *out, struc
 		return WEXITSTATUS(st);
 	return 128 + WTERMSIG(st);
 }
+
+/* «да» на вопрос: y, yes, д, да в любом регистре */
+bool ask(const char *question, bool yes)
+{
+	if (yes)
+		return true;
+	printf("%s [y/N] ", question);
+	fflush(stdout);
+	char line[64];
+	if (!fgets(line, sizeof(line), stdin))
+		return false;
+	char *a = strip(line);
+	for (char *p = a; *p; p++)
+		if (*p >= 'A' && *p <= 'Z')
+			*p = (char)(*p - 'A' + 'a');
+	/* Д (D0 94) → д (D0 B4), А (D0 90) → а (D0 B0) */
+	for (unsigned char *p = (unsigned char *)a; p[0] && p[1]; p++)
+		if (p[0] == 0xD0 && (p[1] == 0x94 || p[1] == 0x90))
+			p[1] = (unsigned char)(p[1] + 0x20);
+	return !strcmp(a, "y") || !strcmp(a, "yes") || !strcmp(a, "д") || !strcmp(a, "да");
+}

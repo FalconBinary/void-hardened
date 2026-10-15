@@ -24,6 +24,8 @@
  *                                    → только отчёт: в этой системе они не запускаются сами.
  *    Исключение для конкретного файла: --keep ПУТЬ.
  * 3. Сироты (зависимости, которые больше никому не нужны) — xbps-remove -o.
+ *    Изменённые конфиги удаляемых пакетов xbps оставляет на месте — их пути пишутся в
+ *    /var/lib/vh/removed-conf.list, и vh-deep-clean убирает их в резерв.
  */
 #include <errno.h>
 #include <stdio.h>
@@ -37,6 +39,7 @@
 #define NOEXTRACT "/etc/xbps.d/50-vh-pkg.conf"
 #define IGNORE "/etc/xbps.d/51-vh-pkg-ignore.conf"
 #define STRIP_LIST "/etc/vh/suid-strip.list"
+#define CONF_LEDGER "/var/lib/vh/removed-conf.list"
 #define STRIP_HDR "# void-hardened: снимать SUID/SGID и capabilities после обновлений (vh-pkg)"
 
 static const char *const deny[][2] = {
@@ -88,27 +91,6 @@ static const char *deny_reason(const char *name)
 		if (startswith(name, deny_prefix[i][0]))
 			return deny_prefix[i][1];
 	return NULL;
-}
-
-/* «да» на вопрос: y, yes, д, да в любом регистре */
-static bool ask(const char *question, bool yes)
-{
-	if (yes)
-		return true;
-	printf("%s [y/N] ", question);
-	fflush(stdout);
-	char line[64];
-	if (!fgets(line, sizeof(line), stdin))
-		return false;
-	char *a = strip(line);
-	for (char *p = a; *p; p++)
-		if (*p >= 'A' && *p <= 'Z')
-			*p = (char)(*p - 'A' + 'a');
-	/* Д (D0 94) → д (D0 B4), А (D0 90) → а (D0 B0) */
-	for (unsigned char *p = (unsigned char *)a; p[0] && p[1]; p++)
-		if (p[0] == 0xD0 && (p[1] == 0x94 || p[1] == 0x90))
-			p[1] = (unsigned char)(p[1] + 0x20);
-	return !strcmp(a, "y") || !strcmp(a, "yes") || !strcmp(a, "д") || !strcmp(a, "да");
 }
 
 /* строка в файл, если её там нет; первая строка нового файла — заголовок */
@@ -344,6 +326,40 @@ static void must(char *const argv[])
 		die("%s: код %d", argv[0], rc);
 }
 
+/* конфиги пакетов, которые удалит plan (xbps-remove -…n), — в журнал для vh-deep-clean */
+static void record_conf(char *const plan[])
+{
+	struct buf o = {0};
+	run(plan, NULL, 0, &o, NULL);
+	char *save = NULL;
+	for (char *l = strtok_r(o.p, "\n", &save); l; l = strtok_r(NULL, "\n", &save)) {
+		char f0[256], f1[64];
+		if (sscanf(l, "%255s %63s", f0, f1) != 2 || strcmp(f1, "remove") != 0)
+			continue;
+		char *name = pkgname(f0);
+		struct buf c = {0};
+		run((char *const[]){"xbps-query", "-p", "conf_files", name, NULL}, NULL, 0, &c, NULL);
+		char *s2 = NULL;
+		for (char *f = strtok_r(c.p, "\n", &s2); f; f = strtok_r(NULL, "\n", &s2)) {
+			f = strip(f);
+			if (*f == '/') {
+				mkdirs("/var/lib/vh", 0755);
+				append_unique(CONF_LEDGER, f,
+					      "# void-hardened: конфиги удалённых пакетов — их убирает vh-deep-clean");
+			}
+		}
+		buf_free(&c);
+		free(name);
+	}
+	buf_free(&o);
+}
+
+static void remove_orphans(void)
+{
+	record_conf((char *const[]){"xbps-remove", "-on", NULL});
+	run((char *const[]){"xbps-remove", "-oy", NULL}, NULL, 0, NULL, NULL);
+}
+
 static void strip_quiet(void)
 {
 	struct buf o = {0};
@@ -405,11 +421,14 @@ int main(int argc, char **argv)
 	if (is_rm) {
 		struct strv a = {0};
 		strv_add(&a, "xbps-remove");
-		strv_add(&a, "-Ry");
+		strv_add(&a, "-Rn");
 		for (size_t i = 0; i < pkgs.n; i++)
 			strv_add(&a, pkgs.v[i]);
+		record_conf(a.v);
+		free(a.v[1]);                 /* -Rn → -Ry */
+		a.v[1] = xstrdup("-Ry");
 		must(a.v);
-		run((char *const[]){"xbps-remove", "-oy", NULL}, NULL, 0, NULL, NULL);
+		remove_orphans();
 		return 0;
 	}
 
@@ -481,7 +500,7 @@ int main(int argc, char **argv)
 	must(a.v);
 	puts("\nРазбор файлов новых пакетов:");
 	int n = scan(names.v, names.n, &keep);
-	run((char *const[]){"xbps-remove", "-oy", NULL}, NULL, 0, NULL, NULL);
+	remove_orphans();
 	strip_quiet();
 	printf("\nОбезврежено объектов: %d. Проверка всей системы: doas vh-audit\n", n);
 	return 0;

@@ -172,10 +172,10 @@ def step_ctools(a):
     try:
         rc, out = run(ser, "command -v python3 perl || echo NO_INTERPRETERS; "
                            "for f in /usr/local/bin/vh-wlfilter /usr/local/sbin/vh-acpid /usr/local/sbin/vh-limine-update "
-                           "/usr/local/sbin/vh-pkg /usr/local/libexec/vh/vh-seccomp; do "
+                           "/usr/local/sbin/vh-pkg /usr/local/sbin/vh-deep-clean /usr/local/libexec/vh/vh-seccomp; do "
                            "printf '%s ' $f; head -c 4 $f | od -An -c | tr -d ' \\n'; echo; done")
         check("нет python3 и perl", "NO_INTERPRETERS" in out, out[-200:])
-        check("инструменты — ELF", out.count("177ELF") == 5, out[-400:].replace("\n", " | "))
+        check("инструменты — ELF", out.count("177ELF") == 6, out[-400:].replace("\n", " | "))
         rc, out = run(ser, "/usr/local/libexec/vh/vh-seccomp --selftest")
         check("vh-seccomp --selftest (C)", rc == 0 and "selftest: OK" in out)
         rc, out = run(ser, "sv restart vh-acpid; sleep 3; sv status vh-acpid; "
@@ -527,9 +527,64 @@ def step_pkg(a):
         shutdown(vm, ser)
 
 
+def step_clean(a):
+    """vh-deep-clean в настоящей системе: мусор каждой группы убран, нужное цело,
+    vh-audit без новых FAIL, система загружается, restore возвращает резерв (docs/12)."""
+    vm, ser = boot(a)
+    try:
+        run(ser, "{ [ -e /etc/vh/optional/strict-net ] && vh-net xbps 30; true; }; xbps-install -SAy tree >/dev/null 2>&1; "
+                 "echo x > /etc/vhtest.conf.new-1.0_1; "
+                 "ln -sfn /etc/sv/vhghost /etc/runit/runsvdir/default/vhghost; "
+                 "mkdir -p /usr/lib/modules/6.0.0_1 && echo x > /usr/lib/modules/6.0.0_1/modules.dep", timeout=900)
+        run(ser, as_user("user", "mkdir -p /home/user/.cache/vhjunk /home/user/.local/share/Trash/files && "
+                                 "head -c 200000 /dev/urandom > /home/user/.cache/vhjunk/blob && "
+                                 "echo t > /home/user/.local/share/Trash/files/old.txt"))
+        rc, out = run(ser, "xbps-query tree >/dev/null && echo HAS_TREE; ls /var/lib/vh-browser/trusted/profile/prefs.js "
+                           "2>/dev/null && echo HAS_PROFILE; uname -r")
+        had_profile = "HAS_PROFILE" in out
+        check("стенд: мусор создан", "HAS_TREE" in out, out[-200:].replace("\n", " | "))
+        rc, out = run(ser, "vh-deep-clean --user", timeout=600)
+        check("план: показаны все группы мусора",
+              rc == 0 and all(x in out for x in ("tree-", "vhtest.conf.new-1.0_1", "vhghost", "6.0.0_1", "/home/user/.cache", "Trash")),
+              out[-1500:].replace("\n", " | "))
+        rc, out = run(ser, "xbps-query tree >/dev/null && test -e /etc/vhtest.conf.new-1.0_1 && echo UNCHANGED")
+        check("план ничего не изменил", "UNCHANGED" in out)
+        rc, out = run(ser, "vh-deep-clean --apply -y --user", timeout=1800)
+        check("--apply: код 0, vh-audit и xbps-pkgdb без новых ошибок",
+              rc == 0 and "Система в порядке" in out and "новых FAIL нет" in out, out[-1500:].replace("\n", " | "))
+        rc, out = run(ser, "xbps-query tree >/dev/null || echo NO_TREE; test -e /etc/vhtest.conf.new-1.0_1 || echo NO_NEW; "
+                           "test -L /etc/runit/runsvdir/default/vhghost || echo NO_GHOST; "
+                           "test -e /usr/lib/modules/6.0.0_1 || echo NO_STALE; test -d /usr/lib/modules/$(uname -r) && echo RUN_KERNEL; "
+                           "test -e /home/user/.cache/vhjunk || echo NO_JUNK; "
+                           "test -e /home/user/.local/share/Trash/files/old.txt || echo NO_TRASH; "
+                           "ls /var/lib/vh-browser/trusted/profile/prefs.js 2>/dev/null && echo HAS_PROFILE; "
+                           "test -z \"$(ls -A /var/cache/xbps)\" && echo CACHE_EMPTY")
+        for mark, name in (("NO_TREE", "сирота удалена"), ("NO_NEW", ".new-файл убран"), ("NO_GHOST", "битая ссылка сервиса убрана"),
+                           ("NO_STALE", "каталог модулей без ядра удалён"), ("RUN_KERNEL", "модули работающего ядра на месте"),
+                           ("NO_JUNK", "~/.cache пользователя очищен"), ("NO_TRASH", "корзина очищена"),
+                           ("CACHE_EMPTY", "кэш xbps пуст")):
+            check(f"--apply: {name}", mark in out)
+        check("--apply: профиль Firefox цел", not had_profile or "HAS_PROFILE" in out)
+    finally:
+        shutdown(vm, ser)
+    vm, ser = boot(a)
+    try:
+        rc, out = run(ser, "cat /proc/cmdline; sv status vh-acpid unbound")
+        check("загрузка после очистки", "lockdown=confidentiality" in out and "run: vh-acpid" in out and "run: unbound" in out,
+              out[-300:].replace("\n", " | "))
+        rc, out = run(ser, "doas vh-audit", timeout=600)
+        m = re.search(r"Итог: ok (\d+), FAIL (\d+), не проверено (\d+)", out)
+        check("vh-audit после перезагрузки без FAIL", m is not None and m.group(2) == "0", m.group(0) if m else "нет итога")
+        rc, out = run(ser, "vh-deep-clean restore; test -e /etc/vhtest.conf.new-1.0_1 && test -L /etc/runit/runsvdir/default/vhghost "
+                           "&& echo RESTORED; rm -f /etc/vhtest.conf.new-1.0_1 /etc/runit/runsvdir/default/vhghost")
+        check("restore вернул резерв", "RESTORED" in out, out[-300:].replace("\n", " | "))
+    finally:
+        shutdown(vm, ser)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["base", "ctools", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "deadmandump", "totp", "modules", "pkg", "all"])
+    ap.add_argument("step", choices=["base", "ctools", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "deadmandump", "totp", "modules", "pkg", "clean", "all"])
     ap.add_argument("--dir", default=os.path.join(vhvm.REPO, "tests", "vm", "work"))
     ap.add_argument("--mem", type=int, default=3072)
     ap.add_argument("--smp", type=int, default=4)
@@ -539,7 +594,7 @@ def main():
     steps = {"base": [step_base], "ctools": [step_ctools], "enroll": [step_enroll], "sb": [step_sb], "lock": [step_lock],
              "desktop": [step_desktop], "strictnet": [step_strictnet], "deadman": [step_deadman],
              "totp": [step_totp], "modules": [step_modules], "pkg": [step_pkg], "deadmandump": [step_deadmandump],
-             "all": [step_base, step_enroll, step_sb, step_lock, step_desktop]}[a.step]
+             "clean": [step_clean], "all": [step_base, step_enroll, step_sb, step_lock, step_desktop]}[a.step]
     for s in steps:
         s(a)
     print("\n==== ИТОГ")

@@ -78,6 +78,7 @@ fi
 
 echo "==> старые ядра"
 command -v vkpurge >/dev/null && vkpurge list | sed 's/^/  можно удалить: /'
+echo "  убрать их и прочий мусор (с резервом и проверкой): doas vh-deep-clean"
 
 echo "==> процессы со старыми библиотеками (перезапустите их или перезагрузитесь)"
 for m in /proc/[0-9]*/maps; do

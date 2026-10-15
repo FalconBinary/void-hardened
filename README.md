@@ -24,7 +24,7 @@ Limine (подписан, хэш конфига вписан) → UKI (ядро 
 | Браузер | Firefox от отдельного пользователя в bwrap без user namespace, Wayland только через фильтрующий прокси (в mango нет security-context), звук без микрофона, AppArmor, политики, одноразовый профиль без JIT для недоверенных сайтов |
 | Удобство | крышка → блокировка, кнопка питания → штатное выключение, яркость и звук без root, Bluetooth по требованию, обновление одной командой `doas vh-update`, проверка всего — `doas vh-audit` |
 | Минимализм | ~13 сервисов, нет systemd, polkit, sudo, ssh-сервера, cron, компиляторов и интерпретаторов вроде Python; прошивки — только нужные этому ноутбуку |
-| Свои инструменты | на C со всеми флагами защиты (прокси Wayland, демоны крышки и стирания ключа, обновление загрузчика, установка пакетов): ≈ 0,9 МБ на все 11 программ, по 1–1,5 МБ RAM на демон; собираются в RAM live-среды — [docs/17](docs/17-c-tools.md) |
+| Свои инструменты | на C со всеми флагами защиты (прокси Wayland, демоны крышки и стирания ключа, обновление загрузчика, установка пакетов, очистка): ≈ 0,6 МБ на все 12 программ, по 1–1,5 МБ RAM на демон; собираются в RAM live-среды — [docs/17](docs/17-c-tools.md) |
 
 Параноидальные слои (включаются отдельно): строгая сеть, пиннинг УЦ для DNS/NTS, защита
 от BadUSB, FIDO2, ключи Secure Boot на отдельной флешке с проверкой сборки UKI,
@@ -114,13 +114,14 @@ install/        00-probe.sh (проба) · 10-install.sh (установка) �
                 (Secure Boot) · 30-lock.sh (modules_disabled) · build-netline.sh · build-tools.sh
                 (инструменты на C) · lib.sh · packages.sh
 src/            инструменты системы на C: vh-wlfilter, vh-acpid, vh-deadman, vh-limine-update,
-                vh-pkg, vh-seccomp, vh-uki-verify, vh-open, vh-usb-udev, pin-fetch; build.sh
+                vh-pkg, vh-deep-clean, vh-seccomp, vh-uki-verify, vh-open, vh-usb-udev,
+                pin-fetch; build.sh
 rootfs/         файлы, которые ложатся в систему (*.in — шаблоны с @VH_*@ из vh.conf)
 optional/       параноидальные модули: <модуль>/enable, disable; status
 tools/          vh-bench (сравнение скорости)
 tests/vm/       стенд qemu + OVMF (Secure Boot) + swtpm: vhvm.py — установка без участия
-                человека, check.py — проверки (base, enroll, sb, lock, desktop, strictnet,
-                deadman, totp, modules, pkg)
+                человека, check.py — проверки (base, ctools, enroll, sb, lock, desktop, strictnet,
+                deadman, deadmandump, totp, modules, pkg, clean)
 tests/c/        инструменты на C в docker: сборка, сравнение с Python-эталоном, фаззинг под ASan
 docs/           руководство
 vh.conf.example все настройки установщика с объяснениями

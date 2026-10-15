@@ -20,6 +20,7 @@ sh tests/c/run.sh                  # проверка против Python-эта
 | `vh-deadman.c` | стирание ключа LUKS (модуль deadman) |
 | `vh-limine-update.c` | подпись UKI, `limine.conf` с хэшами, хэш конфига в Limine |
 | `vh-pkg.c` | установка программ с обезвреживанием |
+| `vh-deep-clean.c` | очистка системы: сироты, хвосты конфигов, старые ядра, кэши; резерв и проверка |
 | `vh-uki-verify.c` | проверка входных данных UKI (модуль sb-offline-keys) |
 | `vh-open.c` | просмотр файлов в песочнице (модуль viewers) |
 | `vh-usb-udev.c` | решение об авторизации USB (модуль usb-auth) |

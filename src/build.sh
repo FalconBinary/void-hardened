@@ -34,6 +34,7 @@ build vh-acpid        vh-acpid.c vh.c
 build vh-deadman      vh-deadman.c vh.c
 build vh-limine-update vh-limine-update.c hash.c vh.c
 build vh-pkg          vh-pkg.c vh.c
+build vh-deep-clean   vh-deep-clean.c vh.c
 build vh-uki-verify   vh-uki-verify.c hash.c vh.c
 build vh-open         vh-open.c seccomp.c vh.c
 build vh-usb-udev     vh-usb-udev.c vh.c

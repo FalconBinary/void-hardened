@@ -84,6 +84,9 @@ long kv_int(const struct kvs *c, const char *k, const char *def);  /* die при
 int run(char *const argv[], const void *in, size_t inlen, struct buf *out, struct buf *err);
 #define RUN(...) run((char *const[]){__VA_ARGS__, NULL}, NULL, 0, NULL, NULL)
 
+/* вопрос [y/N]: true на y, yes, д, да (любой регистр); yes — не спрашивать */
+bool ask(const char *question, bool yes);
+
 /* закрыть все fd ≥ from (перед exec программы с меньшими правами) */
 void close_fds_from(int from);
 

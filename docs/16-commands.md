@@ -141,7 +141,7 @@ efibootmgr -v                      # записи загрузки прошив�
 | `doas vh-limine-update --dry-run` | показать, что будет записано в `limine.conf`, ничего не меняя |
 | `doas vh-limine-update` | переписать `limine.conf` по UKI на ESP (с хэшами), подписать и заменить Limine |
 | `doas vh-limine-update --new 6.18.57_1` | то же, явно указав только что собранную версию ядра (так вызывает хук ядра) |
-| `doas vkpurge list` / `doas vkpurge rm 6.18.55_1` | старые ядра: список / удалить |
+| `doas vkpurge list` / `doas vkpurge rm 6.18.55_1` | старые ядра: список / удалить (все сразу — `vh-deep-clean --only kernels`) |
 
 ### Установка программ — [12-daily.md](12-daily.md#10-установка-программ-vh-pkg)
 
@@ -152,7 +152,18 @@ efibootmgr -v                      # записи загрузки прошив�
 | `doas vh-pkg add ПАКЕТ --keep ПУТЬ` | не трогать этот файл пакета при разборе |
 | `doas vh-pkg add ПАКЕТ -y` | без вопросов |
 | `doas vh-pkg scan ПАКЕТ…` | разобрать уже установленный пакет: SUID/SGID и capabilities снять, sysctl.d и опасные udev-правила замаскировать, хуки ядра/dracut/профиля шелла отключить, сервисы и автозапуск показать |
-| `doas vh-pkg rm ПАКЕТ…` | удалить пакет с зависимостями и сиротами |
+| `doas vh-pkg rm ПАКЕТ…` | удалить пакет с зависимостями и сиротами; изменённые конфиги — в журнал для `vh-deep-clean` |
+
+### Очистка — [12-daily.md](12-daily.md#11-очистка-vh-deep-clean)
+
+| Команда | Что делает |
+|---|---|
+| `doas vh-deep-clean` | план: что удалится по группам и сколько места освободится; ничего не меняет |
+| `doas vh-deep-clean --apply` | убрать ненужное; по каждой группе — вопрос; до и после — `vh-audit` и `xbps-pkgdb -a` |
+| `doas vh-deep-clean --apply -y` | без вопросов (ядра с ключами на носителе так не удаляются) |
+| `doas vh-deep-clean --apply --user` | плюс `~/.cache`, кэш Firefox, корзина |
+| `doas vh-deep-clean --only orphans,conf,services,kernels,cache,user` | только перечисленные группы (с `--apply` или без) |
+| `doas vh-deep-clean restore` | вернуть конфиги и ссылки сервисов из резерва последней очистки |
 
 ### Права и аудит — [05-system.md](05-system.md), [10-audit.md](10-audit.md)
 
@@ -204,7 +215,7 @@ INTERNAL_INPUT=""       # свои имена встроенных устрой�
 | `doas xbps-install -Sn ПАКЕТ` | что поставится вместе с пакетом (без установки) |
 | `doas xbps-remove -R ПАКЕТ` | удалить с ненужными зависимостями |
 | `doas xbps-remove -o` | удалить осиротевшие зависимости |
-| `doas xbps-remove -O` | очистить кэш скачанных пакетов |
+| `doas xbps-remove -O` | убрать из кэша устаревшие версии пакетов (весь кэш — `vh-deep-clean --only cache`) |
 | `doas xbps-pkgdb -a` | проверить целостность всех файлов пакетов (хэши) |
 | `doas xbps-pkgdb -m manual ПАКЕТ` / `-m auto` | пометить пакет как явный / как зависимость |
 | `doas xbps-reconfigure -f ПАКЕТ` | заново выполнить хуки пакета |
