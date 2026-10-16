@@ -517,11 +517,11 @@ def step_pkg(a):
     ещё при распаковке, удаление (docs/12, docs/18)."""
     vm, ser = boot(a)
     try:
-        rc, out = run(ser, "{ [ -e /etc/vh/optional/strict-net ] && vh-net xbps 30; true; }; vh-pkg add -y fuse3; echo rc=$?", timeout=900)
-        check("vh-pkg: fuse3 из чёрного списка не ставится", "rc=0" not in out and "fuse3" in out and "запрещён" in out,
+        rc, out = run(ser, "{ [ -e /etc/vh/optional/strict-net ] && vh-net xbps 30; true; }; vh-pkg add -y fuse3; echo PKG_RC=$?; xbps-query fuse3 >/dev/null 2>&1 || echo NO_FUSE3", timeout=900)
+        check("vh-pkg: fuse3 из чёрного списка не ставится", "PKG_RC=0" not in out and "NO_FUSE3" in out and "запрещён" in out,
               out[-400:].replace("\n", " | "))
-        rc, out = run(ser, "echo y | thor allow fuse3 && vh-pkg add -y fuse3; echo rc=$?", timeout=900)
-        check("vh-pkg add после thor allow: установка прошла", "rc=0" in out, out[-600:].replace("\n", " | "))
+        rc, out = run(ser, "echo y | thor allow fuse3 && vh-pkg add -y fuse3; echo PKG_RC=$?", timeout=900)
+        check("vh-pkg add после thor allow: установка прошла", "PKG_RC=0" in out, out[-600:].replace("\n", " | "))
         rc, out = run(ser, "ls -l /usr/bin/fusermount3; grep fusermount3 /var/log/thor.log | tail -2; ls /etc/udev/rules.d/")
         check("SUID у fusermount3 снят при распаковке (thor)", "-rwsr" not in out and "SUID/SGID снят: /usr/bin/fusermount3" in out,
               out[-300:].replace("\n", " | "))
