@@ -1,0 +1,238 @@
+diff --git a/lib/Makefile b/lib/Makefile
+index 2b4efe4..5574032 100644
+--- a/lib/Makefile
++++ b/lib/Makefile
+@@ -53,6 +53,9 @@ OBJS += rpool.o cb_util.o proplib_wrapper.o
+ OBJS += package_alternatives.o
+ OBJS += conf.o log.o
+ OBJS += $(EXTOBJS) $(COMPAT_OBJS)
++# thor: политика безопасности на Zig (thor/policy/policy.zig), объектный файл
++# собирает thor/build.sh до make
++THOR_POLICY_OBJ ?= thor_policy.o
+ # unnecessary unless pkgdb format changes
+ # OBJS += pkgdb_conversion.o
+ .PHONY: all
+@@ -80,13 +83,13 @@ $(OBJS): %.o: %.c
+ 	@printf " [CC]\t\t$@\n"
+ 	${SILENT}$(CC) $(CPPFLAGS) $(CFLAGS) $(SHAREDLIB_CFLAGS) -c $< -o $@
+ 
+-libxbps.so: $(LIBFETCH_OBJS) $(LIBPROP_OBJS) $(OBJS)
++libxbps.so: $(LIBFETCH_OBJS) $(LIBPROP_OBJS) $(OBJS) $(THOR_POLICY_OBJ)
+ 	@printf " [CCLD]\t\t$@\n"
+ 	${SILENT}$(CC) $^ $(CFLAGS) $(LDFLAGS) -o $(LIBXBPS_SHLIB)
+ 	@-ln -sf $(LIBXBPS_SHLIB) libxbps.so.$(LIBXBPS_MAJOR)
+ 	@-ln -sf $(LIBXBPS_SHLIB) libxbps.so
+ 
+-libxbps.a: $(LIBFETCH_OBJS) $(LIBPROP_OBJS) $(OBJS)
++libxbps.a: $(LIBFETCH_OBJS) $(LIBPROP_OBJS) $(OBJS) $(THOR_POLICY_OBJ)
+ 	@printf " [AR]\t\t$@\n"
+ 	${SILENT}$(AR) rcs $@ $^
+ 	@printf " [RANLIB]\t$@\n"
+diff --git a/lib/package_unpack.c b/lib/package_unpack.c
+index 05774bf..5d9239d 100644
+--- a/lib/package_unpack.c
++++ b/lib/package_unpack.c
+@@ -39,6 +39,7 @@
+ #include <archive_entry.h>
+ 
+ #include "xbps_api_impl.h"
++#include "thor_policy.h"
+ 
+ #define EXTRACT_FLAGS	ARCHIVE_EXTRACT_SECURE_NODOTDOT | \
+ 			ARCHIVE_EXTRACT_SECURE_SYMLINKS | \
+@@ -269,6 +270,25 @@ unpack_archive(struct xbps_handle *xhp,
+ 			archive_read_data_skip(ar);
+ 			continue;
+ 		}
++		/*
++		 * thor: политика безопасности (thor_policy.h) — до любых действий с файлом,
++		 * чтобы и chmod для уже существующего файла (ниже) не вернул SUID.
++		 */
++		{
++			unsigned int tmode = (unsigned int)archive_entry_mode(entry);
++			if (thor_unpack_entry(xhp->rootdir, pkgver, entry_pname + 1, &tmode) == THOR_SKIP) {
++				xbps_set_cb_state(xhp, XBPS_STATE_UNPACK_FILE_PRESERVED, 0,
++				    pkgver, "%s: file `%s' won't be extracted, "
++				    "denied by thor policy.", pkgver, entry_pname);
++				archive_read_data_skip(ar);
++				continue;
++			}
++			if (tmode != (unsigned int)archive_entry_mode(entry)) {
++				archive_entry_set_mode(entry, (mode_t)tmode);
++				entry_statp = archive_entry_stat(entry);
++				entry_pname = archive_entry_pathname(entry);
++			}
++		}
+ 		/*
+ 		 * Always check that extracted file exists and hash
+ 		 * doesn't match, in that case overwrite the file.
+@@ -425,6 +445,7 @@ unpack_archive(struct xbps_handle *xhp,
+ 			    pkgver, entry_pname, strerror(error));
+ 			break;
+ 		} else {
++			thor_after_extract(xhp->rootdir, pkgver, entry_pname + 1);
+ 			if (xhp->unpack_cb != NULL) {
+ 				xucd.entry = entry_pname;
+ 				xucd.entry_extract_count++;
+diff --git a/lib/thor_policy.h b/lib/thor_policy.h
+new file mode 100644
+index 0000000..57d14c1
+--- /dev/null
++++ b/lib/thor_policy.h
+@@ -0,0 +1,29 @@
++/*
++ * thor: политика безопасности void-hardened внутри libxbps.
++ * Реализация — на Zig (thor/policy/policy.zig, объектный файл thor_policy.o),
++ * поэтому действует во всех программах xbps-*, а не только в thor.
++ *
++ * Пути передаются от корня системы ("/usr/bin/doas"); rootdir — корень установки
++ * (xhp->rootdir, "/" или, например, "/mnt" при установке системы).
++ */
++#ifndef THOR_POLICY_H
++#define THOR_POLICY_H
++
++enum {
++	THOR_EXTRACT = 0,  /* распаковать (возможно, с изменённым *mode) */
++	THOR_SKIP = 1,     /* не распаковывать */
++};
++
++/* Перед распаковкой файла: решение и, возможно, новый режим (без SUID/SGID). */
++int thor_unpack_entry(const char *rootdir, const char *pkgver, const char *path,
++		      unsigned int *mode);
++/* Сразу после распаковки файла: проверка содержимого (правила udev). */
++void thor_after_extract(const char *rootdir, const char *pkgver, const char *path);
++/* Пакет в транзакции (install, update, reinstall): 0 — можно, иначе в *reason —
++ * причина запрета (статическая строка). */
++int thor_transaction_pkg(const char *rootdir, const char *pkgname, const char **reason);
++/* Файл пакета после настройки (скрипты INSTALL уже отработали): SUID и
++ * capabilities, которые поставили скрипты; отчёт о сервисах (installed != 0). */
++void thor_post_file(const char *rootdir, const char *pkgver, const char *path, int installed);
++
++#endif
+diff --git a/lib/transaction_commit.c b/lib/transaction_commit.c
+index b2b0594..32bb6ef 100644
+--- a/lib/transaction_commit.c
++++ b/lib/transaction_commit.c
+@@ -34,6 +34,7 @@
+ #include <locale.h>
+ 
+ #include "xbps_api_impl.h"
++#include "thor_policy.h"
+ 
+ /**
+  * @file lib/transaction_commit.c
+@@ -99,6 +100,42 @@ out:
+ 	return rv;
+ }
+ 
++/*
++ * thor: файлы установленных и обновлённых пакетов после скриптов INSTALL
++ * (thor_policy.h): SUID и capabilities, которые поставили скрипты.
++ */
++static void
++thor_post_scan(struct xbps_handle *xhp)
++{
++	static const char *const kinds[] = { "files", "conf_files" };
++	xbps_array_t pkgs = xbps_dictionary_get(xhp->transd, "packages");
++
++	for (unsigned int i = 0; i < xbps_array_count(pkgs); i++) {
++		xbps_dictionary_t obj = xbps_array_get(pkgs, i), filesd;
++		const char *pkgname = NULL, *pkgver = NULL;
++		xbps_trans_type_t ttype = xbps_transaction_pkg_type(obj);
++
++		if (ttype != XBPS_TRANS_INSTALL && ttype != XBPS_TRANS_UPDATE &&
++		    ttype != XBPS_TRANS_REINSTALL)
++			continue;
++		if (!xbps_dictionary_get_cstring_nocopy(obj, "pkgname", &pkgname) ||
++		    !xbps_dictionary_get_cstring_nocopy(obj, "pkgver", &pkgver))
++			continue;
++		if ((filesd = xbps_pkgdb_get_pkg_files(xhp, pkgname)) == NULL)
++			continue;
++		for (unsigned int k = 0; k < 2; k++) {
++			xbps_array_t a = xbps_dictionary_get(filesd, kinds[k]);
++			for (unsigned int j = 0; j < xbps_array_count(a); j++) {
++				const char *file = NULL;
++				xbps_dictionary_get_cstring_nocopy(xbps_array_get(a, j), "file", &file);
++				if (file != NULL)
++					thor_post_file(xhp->rootdir, pkgver, file,
++					    ttype == XBPS_TRANS_INSTALL);
++			}
++		}
++	}
++}
++
+ int
+ xbps_transaction_commit(struct xbps_handle *xhp)
+ {
+@@ -447,5 +484,7 @@ out:
+ 		/* Force a pkgdb write for all unpacked pkgs in transaction */
+ 		rv = xbps_pkgdb_update(xhp, true, true);
+ 	}
++	if (rv == 0 && !(xhp->flags & XBPS_FLAG_DOWNLOAD_ONLY))
++		thor_post_scan(xhp);
+ 	return rv;
+ }
+diff --git a/lib/transaction_prepare.c b/lib/transaction_prepare.c
+index 814559f..8eb74a7 100644
+--- a/lib/transaction_prepare.c
++++ b/lib/transaction_prepare.c
+@@ -31,6 +31,7 @@
+ #include <sys/statvfs.h>
+ 
+ #include "xbps_api_impl.h"
++#include "thor_policy.h"
+ 
+ /**
+  * @file lib/transaction_prepare.c
+@@ -275,6 +276,36 @@ xbps_transaction_init(struct xbps_handle *xhp)
+ 	return 0;
+ }
+ 
++static int
++thor_check_transaction(struct xbps_handle *xhp)
++{
++	xbps_array_t pkgs = xbps_dictionary_get(xhp->transd, "packages");
++	int denied = 0;
++
++	for (unsigned int i = 0; i < xbps_array_count(pkgs); i++) {
++		xbps_dictionary_t obj = xbps_array_get(pkgs, i);
++		const char *pkgname = NULL, *pkgver = NULL, *reason = NULL;
++		xbps_trans_type_t ttype = xbps_transaction_pkg_type(obj);
++
++		if (ttype != XBPS_TRANS_INSTALL && ttype != XBPS_TRANS_UPDATE &&
++		    ttype != XBPS_TRANS_REINSTALL)
++			continue;
++		if (!xbps_dictionary_get_cstring_nocopy(obj, "pkgname", &pkgname) ||
++		    !xbps_dictionary_get_cstring_nocopy(obj, "pkgver", &pkgver))
++			continue;
++		if (thor_transaction_pkg(xhp->rootdir, pkgname, &reason) != 0) {
++			xbps_error_printf("thor: %s запрещён: %s\n", pkgver, reason);
++			denied++;
++		}
++	}
++	if (denied) {
++		xbps_error_printf("thor: транзакция отменена; разрешить пакет: "
++		    "doas thor allow ИМЯ (docs/18)\n");
++		return EPERM;
++	}
++	return 0;
++}
++
+ int
+ xbps_transaction_prepare(struct xbps_handle *xhp)
+ {
+@@ -426,6 +457,14 @@ out:
+ 	if ((rv = compute_transaction_stats(xhp)) != 0) {
+ 		return rv;
+ 	}
++	/*
++	 * thor: пакеты из чёрного списка (thor_policy.h) — и при обновлениях.
++	 */
++	if ((rv = thor_check_transaction(xhp)) != 0) {
++		xbps_object_release(xhp->transd);
++		xhp->transd = NULL;
++		return rv;
++	}
+ 	/*
+ 	 * Make transaction dictionary immutable.
+ 	 */

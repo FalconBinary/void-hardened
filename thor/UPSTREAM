@@ -1,0 +1,7 @@
+# xbps — основа thor (docs/18). Контрольная сумма совпадает с шаблоном Void
+# (void-packages/srcpkgs/xbps/template, checksum=).
+XBPS_VERSION=0.60.7
+XBPS_URL=https://github.com/void-linux/xbps/archive/refs/tags/0.60.7.tar.gz
+XBPS_SHA256=ec8c2e4d595863b5748c10d9ada1d51ac1da6f910a9d31682acd1a477310c64e
+# версия пакета thor: ВЕРСИЯ_XBPS.РЕВИЗИЯ_THOR
+THOR_REVISION=1
