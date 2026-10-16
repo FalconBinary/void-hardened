@@ -31,6 +31,7 @@ const mem = std.mem;
 const rules = @import("rules.zig");
 const denyReason = rules.denyReason;
 const suid_allowed = rules.suid_allowed;
+const caps_allowed = rules.caps_allowed;
 const base = rules.base;
 const isKernelHook = rules.isKernelHook;
 const dracutModule = rules.dracutModule;
@@ -359,8 +360,11 @@ export fn thor_post_file(rootdir_c: [*:0]const u8, pkgver_c: [*:0]const u8, path
             }
         }
         // file capabilities (setcap в скрипте INSTALL)
+        const caps_ok = for (caps_allowed) |s| {
+            if (mem.eql(u8, s, path)) break true;
+        } else false;
         var buf: [256]u8 = undefined;
-        if (ok(linux.lgetxattr(full.ptr, "security.capability", &buf, buf.len))) {
+        if (!caps_ok and ok(linux.lgetxattr(full.ptr, "security.capability", &buf, buf.len))) {
             if (ok(linux.lremovexattr(full.ptr, "security.capability"))) {
                 act(c, pkgver, "capabilities сняты: {s}", .{path});
             } else {

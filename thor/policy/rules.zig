@@ -75,6 +75,10 @@ pub fn denyReason(name: []const u8) ?[:0]const u8 {
 /// SUID/SGID, без которых система не работает (их же ждёт vh-audit)
 pub const suid_allowed = [_][]const u8{ "/usr/bin/doas", "/usr/bin/unix_chkpwd" };
 
+/// file capabilities, без которых система не работает (их же ждёт vh-audit): nanoklogd
+/// (socklog-void) читает журнал ядра от непривилегированного пользователя — cap_syslog
+pub const caps_allowed = [_][]const u8{"/usr/bin/nanoklogd"};
+
 // ---------------------------------------------------------------- категории путей
 
 pub fn base(p: []const u8) []const u8 {

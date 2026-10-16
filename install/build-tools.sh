@@ -1,10 +1,11 @@
 #!/bin/bash
-# void-hardened: инструменты системы на C (src/) — сборка и установка (docs/05, src/README.md).
+# void-hardened: инструменты системы на Zig (zig/) — сборка и установка (docs/05, docs/17).
 #   install/build-tools.sh ROOT                     — собрать в RAM live-среды, поставить в ROOT
-#   install/build-tools.sh --prebuilt КАТАЛОГ ROOT  — поставить уже собранные (VM-стенд, src/build.sh)
+#   install/build-tools.sh --prebuilt КАТАЛОГ ROOT  — поставить уже собранные (VM-стенд, tests/zig/build.sh)
 #
 # В установленной системе нет ни компилятора, ни интерпретаторов вроде python3 — намеренно
-# (docs/05): gcc ставится только в live-среду, в RAM, и исчезает с перезагрузкой. Обновить
+# (docs/05): Zig скачивается в live-среду (install/fetch-zig.sh, подпись minisign), живёт
+# в RAM и исчезает с перезагрузкой. gcc не нужен. Обновить
 # программы после git pull: загрузиться с флешки, открыть и смонтировать корень в /mnt и
 # запустить этот скрипт ещё раз — заменятся и копии, уже поставленные модулями optional/.
 set -euo pipefail
@@ -34,12 +35,14 @@ else
 	ROOT=${1:?"корень системы, например /mnt"}
 	BUILD=$(mktemp -d /tmp/vh-build.XXXXXX)
 	trap 'rm -rf "$BUILD"' EXIT
-	if ! command -v gcc >/dev/null || [ ! -e /usr/include/openssl/ssl.h ] || [ ! -e /usr/include/crypt.h ]; then
-		say "компилятор и заголовки — в live-среду (RAM)"
-		xbps-install -Sy gcc openssl-devel libxcrypt-devel
-	fi
-	say "сборка инструментов на C (src/)"
-	sh "$VH_ROOT/src/build.sh" "$BUILD"
+	# заголовки для pin-fetch (OpenSSL) и vh-hashpw (libxcrypt) — в RAM live-среды
+	xbps-install -Sy openssl-devel libxcrypt-devel >/dev/null || die "не удалось поставить заголовки в live-среду"
+	ZIG=$(bash "$VH_ROOT/install/fetch-zig.sh" "$(cat "$VH_ROOT/zig/ZIG_VERSION")" /tmp/vh-zig)
+	say "сборка инструментов на Zig (zig/, ReleaseSafe)"
+	cp -R "$VH_ROOT/zig" "$BUILD/src"
+	( cd "$BUILD/src" && ZIG_GLOBAL_CACHE_DIR=$BUILD/gcache ZIG_LOCAL_CACHE_DIR=$BUILD/cache \
+		"$ZIG" build -Dtarget=native -Dcpu=baseline -Dlibc-tools=true --prefix "$BUILD/out" )
+	mv "$BUILD/out/bin"/* "$BUILD/"
 	"$BUILD/vh-seccomp" --selftest >/dev/null || die "vh-seccomp --selftest не прошёл"
 fi
 [ -d "$ROOT/usr/local" ] || die "$ROOT — не корень системы"

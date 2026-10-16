@@ -29,9 +29,11 @@ printf '#!/bin/sh\n' > "$p/usr/bin/t-sgid"; chmod 2755 "$p/usr/bin/t-sgid"
 printf '#!/bin/sh\n' > "$p/usr/bin/t-keep"; chmod 4755 "$p/usr/bin/t-keep"
 printf '#!/bin/sh\n' > "$p/usr/bin/t-script"; chmod 0755 "$p/usr/bin/t-script"
 printf '#!/bin/sh\n' > "$p/usr/bin/t-cap"; chmod 0755 "$p/usr/bin/t-cap"
+printf '#!/bin/sh\n' > "$p/usr/bin/nanoklogd"; chmod 0755 "$p/usr/bin/nanoklogd"
 # скрипт INSTALL возвращает SUID и ставит capability — это снимает разбор после настройки
+# (xbps передаёт действие в $1; метка — доказательство, что скрипт действительно отработал)
 cat > "$p/INSTALL" <<'EOF'
-case "$2" in post) chmod u+s usr/bin/t-script; setcap cap_net_raw+ep usr/bin/t-cap ;; esac
+case "$1" in post) chmod u+s usr/bin/t-script; setcap cap_net_raw+ep usr/bin/t-cap; setcap cap_syslog=ep usr/bin/nanoklogd; : > /tmp/t-install-ran ;; esac
 EOF
 mk t-suid "$p"
 
@@ -88,8 +90,10 @@ inst t-suid t-hooks > "$w/enforce.log" 2>&1 || { cat "$w/enforce.log"; bad "ус
 check "SUID снят при распаковке" '[ -f /usr/bin/t-suid ] && [ ! -u /usr/bin/t-suid ] && [ -x /usr/bin/t-suid ]'
 check "SGID снят при распаковке" '[ ! -g /usr/bin/t-sgid ]'
 check "keep.conf: SUID оставлен" '[ -u /usr/bin/t-keep ]'
-check "SUID из скрипта INSTALL снят" '[ ! -u /usr/bin/t-script ]'
-check "capability из скрипта INSTALL снята" '[ -z "$(getcap /usr/bin/t-cap)" ]'
+check "скрипт INSTALL отработал (иначе проверки ниже пусты)" '[ -e /tmp/t-install-ran ]'
+check "SUID из скрипта INSTALL снят" '[ ! -u /usr/bin/t-script ] && grep -q "SUID/SGID снят: /usr/bin/t-script (поставил скрипт пакета)" /var/log/thor.log'
+check "capability из скрипта INSTALL снята" '[ -z "$(getcap /usr/bin/t-cap)" ] && grep -q "capabilities сняты: /usr/bin/t-cap" /var/log/thor.log'
+check "cap_syslog у nanoklogd (socklog) оставлена" 'getcap /usr/bin/nanoklogd | grep -q cap_syslog'
 check "хук ядра не распакован" '[ ! -e /etc/kernel.d/post-install/50-evil ]'
 check "profile.d не распакован" '[ ! -e /etc/profile.d/evil.sh ]'
 check "модуль dracut не распакован" '[ ! -e /usr/lib/dracut/modules.d/99evil/module-setup.sh ]'

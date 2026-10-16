@@ -42,7 +42,7 @@ CFLAGS="-O2 -pipe -Wno-error -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-prote
 -fstack-clash-protection $cet -ftrivial-auto-var-init=zero"
 
 echo "== политика (Zig) → thor_policy.o"
-"$ZIG" build-obj "$thor/policy/policy.zig" -OReleaseSafe -fPIC -fno-omit-frame-pointer \
+"$ZIG" build-obj "$thor/policy/policy.zig" -OReleaseSafe -mcpu=baseline -fPIC -fno-omit-frame-pointer \
 	-femit-bin="$src/lib/thor_policy.o"
 
 echo "== xbps $XBPS_VERSION + патчи (zig cc)"
@@ -67,7 +67,7 @@ if [ -e "$thor/src/thor.zig" ]; then
 	echo "== thor (Zig)"
 	(
 		cd "$thor"
-		"$ZIG" build -Dxbps-src="$src" --prefix "$dest/usr"
+		"$ZIG" build -Dcpu=baseline -Dxbps-src="$src" --prefix "$dest/usr"
 	)
 fi
 echo "== готово: $dest"

@@ -748,6 +748,8 @@ fn showPolicy() void {
     }
     vh.outs("SUID/SGID разрешены: ");
     for (rules.suid_allowed, 0..) |s, i| vh.out("{s}{s}", .{ if (i > 0) " " else "", s });
+    vh.outs("\ncapabilities разрешены: ");
+    for (rules.caps_allowed, 0..) |s, i| vh.out("{s}{s}", .{ if (i > 0) " " else "", s });
     vh.out("\nчёрный список: {d} пакетов (thor allow ИМЯ — разрешить)\nжурнал: /var/log/thor.log\n", .{rules.deny.len});
     vh.flush();
 }

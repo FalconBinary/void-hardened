@@ -28,7 +28,8 @@ PKGVER=thor-$XBPS_VERSION.${THOR_REVISION}_1
 say "thor: заголовки и инструменты сборки — в RAM live-среды (gcc не нужен)"
 xbps-install -Sy openssl-devel libarchive-devel zlib-devel pkgconf make patch >/dev/null \
 	|| die "не удалось поставить заголовки в live-среду"
-ZIG=$(bash "$VH_ROOT/install/fetch-zig.sh" "$ZIG_VERSION" "$WORK/zig")
+# тот же каталог, что у build-tools.sh: Zig скачивается один раз
+ZIG=$(bash "$VH_ROOT/install/fetch-zig.sh" "$ZIG_VERSION" /tmp/vh-zig)
 export ZIG
 
 say "xbps $XBPS_VERSION: исходники (сверка с thor/UPSTREAM)"
