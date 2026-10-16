@@ -17,10 +17,17 @@ rm -rf "$dest"
 echo "== сборка thor"
 docker run --rm -v "$repo:/src:ro" -v "$repo/build:/b" "$img" \
 	sh /src/thor/build.sh "/b/xbps-dl/xbps-$XBPS_VERSION.tar.gz" /tmp/w /b/thor-dest
-for t in policy_test fetch_test package_test; do
+# vh-pkg (Zig) — для теста на системе с thor
+case $(uname -m) in arm64|aarch64) a=aarch64 ;; *) a=x86_64 ;; esac
+(cd "$repo/zig" && zig build -Dtarget="$a-linux" --prefix "$repo/build/zig-bin")
+for t in policy_test fetch_test package_test vhpkg_test; do
 	echo "== $t"
+	case $t in
+		vhpkg_test) cmd="sh /src/tests/thor/package_test.sh /tmp/d >/dev/null && sh /src/tests/thor/vhpkg_test.sh /b/zig-bin/bin/vh-pkg" ;;
+		*) cmd="sh /src/tests/thor/$t.sh /tmp/d" ;;
+	esac
 	docker run --rm -v "$repo:/src:ro" -v "$repo/build:/b:ro" "$img" sh -c "
-		cp -R /b/thor-dest /tmp/d && sh /src/tests/thor/$t.sh /tmp/d" > "$repo/build/$t.log" 2>&1 \
+		cp -R /b/thor-dest /tmp/d && $cmd" > "$repo/build/$t.log" 2>&1 \
 		|| { grep -v '^ok ' "$repo/build/$t.log" | tail -30; exit 1; }
 	tail -1 "$repo/build/$t.log"
 done

@@ -488,6 +488,19 @@ pub fn getenv(name: []const u8) ?[]const u8 {
     return null;
 }
 
+/// заменить или добавить переменную окружения (для запускаемых программ и поиска по PATH)
+pub fn setenv(name: []const u8, value: []const u8) void {
+    var list: std.ArrayList(?[*:0]const u8) = .empty;
+    var i: usize = 0;
+    while (envp[i]) |e| : (i += 1) {
+        const s = mem.span(e);
+        if (s.len > name.len and s[name.len] == '=' and mem.eql(u8, s[0..name.len], name)) continue;
+        list.append(gpa, e) catch oom();
+    }
+    list.append(gpa, z(fmt("{s}={s}", .{ name, value })).ptr) catch oom();
+    envp = (list.toOwnedSliceSentinel(gpa, null) catch oom()).ptr;
+}
+
 pub const RunOpts = struct {
     /// передать на stdin
     in: ?[]const u8 = null,
