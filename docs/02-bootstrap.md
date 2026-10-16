@@ -25,7 +25,14 @@
   с независимым источником перед важными обновлениями ([09](09-updates.md)).
 
 Зеркала: `https://xmirror.voidlinux.org` (список) — выберите ближайшее с HTTPS и
-укажите в `VH_MIRROR`.
+укажите в `VH_MIRROR`. После установки самое быстрое зеркало подберёт `doas thor mirror`
+([18](18-thor.md)).
+
+**thor вместо xbps.** Установщик собирает в RAM live-среды **thor** — тот же xbps 0.60.7
+(архив сверен с шаблоном Void), но с политикой безопасности внутри libxbps и параллельной
+загрузкой ([18](18-thor.md)). Через него ставится вся система: SUID у новых файлов
+снимается ещё при распаковке, пакет из чёрного списка отменяет установку. Пакет `thor`
+заменяет в системе `xbps` и `libxbps`, команды `xbps-*` остаются прежними.
 
 ## 2. Конфигурация xbps до установки
 
@@ -44,7 +51,7 @@ nonfree нужен ради одного пакета — `intel-ucode` (зак�
 | Пакет | Кто тянет | Почему не нужен |
 |---|---|---|
 | python3-tkinter, -gobject, -dbus, -notify2, -psutil | apparmor | нужны только графическим утилитам (aa-notify); `apparmor_parser` и `aa-status` — на C |
-| python3 | apparmor, nftables | нужен только их Python-обвязкам; интерпретатор с FFI обходит noexec, а инструменты системы на C ([17](17-c-tools.md)) |
+| python3 | apparmor, nftables | нужен только их Python-обвязкам; интерпретатор с FFI обходит noexec, а инструменты системы на C ([17](17-zig-tools.md)) |
 | openresolv | iwd, wireguard-tools | `resolv.conf` статический (127.0.0.1), его никто не переписывает |
 | sudo | — (страховка) | администрирование через opendoas: в нём на порядки меньше кода, чем в sudo |
 
@@ -105,7 +112,7 @@ ICMP-сокеты для группы `netdiag` ([05](05-system.md)).
 
 | Группа | Пакеты | Зачем |
 |---|---|---|
-| Основа | base-files xbps runit-void coreutils findutils diffutils dash bash grep gzip sed gawk less which tar util-linux shadow procps-ng iana-etc tzdata glibc-locales ncurses kbd kmod eudev iproute2 iputils libcap-progs ethtool iw pciutils usbutils | минимально работающая система, сеть, диагностика |
+| Основа | base-files thor runit-void coreutils findutils diffutils dash bash grep gzip sed gawk less which tar util-linux shadow procps-ng iana-etc tzdata glibc-locales ncurses kbd kmod eudev iproute2 iputils libcap-progs ethtool iw pciutils usbutils | минимально работающая система, сеть, диагностика |
 | Документация | mdocml man-pages nvi | `man` и редактор — сисадмину без них никак |
 | Ядро | linux6.18 | серия ядра напрямую: метапакет `linux` тянет `linux-base` → прошивки AMD, NVIDIA, sof, alsa |
 | Прошивки | linux-firmware-intel linux-firmware-network wireless-regdb intel-ucode | i915, iwlwifi/BT, rtl_nic; база регуляторных доменов; микрокод |
@@ -113,7 +120,7 @@ ICMP-сокеты для группы `netdiag` ([05](05-system.md)).
 | Защита | opendoas dumb_runtime_dir apparmor bubblewrap acl-progs | doas, `/run/user/UID`, MAC, песочницы, ACL каталога обмена |
 | Сеть и время | dbus iwd nftables unbound chrony (+ dhcpcd при VH_ETH=dhcp) | Wi-Fi, файрвол, DNS, NTS |
 | Журналы | socklog-void | syslog и журнал ядра в `/var/log/socklog` |
-| Рабочий стол | seatd mangowc foot swaylock swayidle wl-clipboard mesa-dri intel-media-driver pipewire wireplumber alsa-utils firefox dejavu-fonts-ttf | сеанс, графика, видео, звук, браузер; python3 — для своих инструментов |
+| Рабочий стол | seatd mangowc foot swaylock swayidle wl-clipboard mesa-dri intel-media-driver pipewire wireplumber alsa-utils firefox dejavu-fonts-ttf | сеанс, графика, видео, звук, браузер |
 
 `dracut-uefi` тянет `binutils` (`objcopy` собирает UKI). В нём есть ассемблер `as` и
 компоновщик `ld` — правило «компиляторов нет» выполняется не полностью. Компилятора C
@@ -129,7 +136,9 @@ avahi, cups, NetworkManager, демоны питания (tlp, thermald и т. �
 ## 4. Установка в /mnt
 
 ```sh
-XBPS_ARCH=x86_64 xbps-install -Sy -r /mnt \
+install/build-thor.sh /mnt          # thor в RAM: Zig (подпись minisign), xbps + патч, пакет в /mnt/var/lib/thor/repo
+printf 'mode=learn\n' > /mnt/etc/thor/policy.conf
+XBPS_ARCH=x86_64 /tmp/vh-thor/dest/usr/bin/thor install -y -r /mnt \
   -R https://repo-default.voidlinux.org/current \
   -R https://repo-default.voidlinux.org/current/nonfree \
   $(список пакетов без linux6.18)
@@ -137,7 +146,12 @@ XBPS_ARCH=x86_64 xbps-install -Sy -r /mnt \
 
 - `-r /mnt` — корень установки; скрипты пакетов (INSTALL) xbps выполняет через
   `chroot /mnt`.
-- `-S` — синхронизировать индекс; `-y` — не спрашивать.
+- `-y` — не спрашивать; индекс thor синхронизирует сам.
+- `mode=learn` — на время установки: хуки ядра, модули dracut и правила udev пакетов
+  самой системы записываются в базовый список `/etc/thor/baseline`, а не обезвреживаются.
+  SUID, capabilities и чёрный список действуют и в этом режиме. В конце установки
+  `10-install.sh` ставит `mode=enforce`.
+- Пакеты качаются в 4 потока, а подпись каждого проверяет xbps — как и без thor.
 
 **Ядро ставится последним**, после настройки. Почему: установка ядра запускает хуки
 `/etc/kernel.d/post-install/*`. Если ядро поставить первым, хук dracut соберёт

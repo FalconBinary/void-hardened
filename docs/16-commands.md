@@ -52,7 +52,8 @@
 | `./install/10-install.sh --config ДРУГОЙ.conf` | установка с другим файлом настроек |
 | `./install/build-netline.sh /mnt` | собрать и поставить netline в смонтированную систему (установщик делает это сам при `VH_NETLINE=yes`) |
 
-| `install/build-tools.sh /mnt` | собрать инструменты на C в RAM live-среды и поставить в систему ([17](17-c-tools.md)); повторный запуск после `git pull` обновляет их |
+| `install/build-tools.sh /mnt` | собрать инструменты на Zig в RAM live-среды и поставить в систему ([17](17-zig-tools.md)); повторный запуск после `git pull` обновляет их |
+| `install/build-thor.sh /mnt` | собрать thor (xbps + политика) в RAM live-среды, пакет — в `/mnt/var/lib/thor/repo` ([18](18-thor.md)); установщик делает это сам; затем в системе `doas xbps-install -Su thor` |
 
 `install/chroot.sh` и `install/lib.sh` руками не запускаются — их вызывает `10-install.sh`.
 
@@ -143,15 +144,24 @@ efibootmgr -v                      # записи загрузки прошив�
 | `doas vh-limine-update --new 6.18.57_1` | то же, явно указав только что собранную версию ядра (так вызывает хук ядра) |
 | `doas vkpurge list` / `doas vkpurge rm 6.18.55_1` | старые ядра: список / удалить (все сразу — `vh-deep-clean --only kernels`) |
 
-### Установка программ — [12-daily.md](12-daily.md#10-установка-программ-vh-pkg)
+### Установка программ — [12-daily.md](12-daily.md#10-установка-программ-thor-и-vh-pkg), [18-thor.md](18-thor.md)
 
 | Команда | Что делает |
 |---|---|
-| `doas vh-pkg add ПАКЕТ…` | показать план, пометить нежелательные зависимости (`!!` и причина), поставить, разобрать файлы пакета, убрать осиротевшие зависимости |
+| `doas thor install ПАКЕТ… [-y] [-j N]` | установить: синхронизация, план, параллельная загрузка (N воркеров, по умолчанию 4), установка с политикой (SUID, хуки, udev, чёрный список); принимает ключи `xbps-install` |
+| `doas thor update [-y]` | обновить всё (= `xbps-install -Su`, загрузка параллельно) |
+| `doas thor fetch [-u] [ПАКЕТ…]` | только скачать в кэш и проверить подписи |
+| `doas thor remove ПАКЕТ…` | = `xbps-remove` |
+| `thor search СЛОВО` | = `xbps-query -Rs` |
+| `doas thor mirror [--write]` | замер зеркал (задержка, скорость); `--write` — лучшее в `/etc/xbps.d`, запасные в `/etc/thor/thor.conf` |
+| `doas thor allow ПАКЕТ…` | разрешить пакет из чёрного списка (покажет причину, спросит) — `/etc/thor/allow.conf` |
+| `doas thor keep ПУТЬ…` | исключение политики для файла или каталога модуля dracut — `/etc/thor/keep.conf` |
+| `doas thor baseline` | базовый список хуков и правил из установленных пакетов (перевод старой установки на thor) |
+| `thor policy` | режим политики, число записей в списках, разрешённые SUID и capabilities |
+| `doas vh-pkg add ПАКЕТ… [-y]` | = `thor install` + уборка осиротевших зависимостей |
 | `doas vh-pkg add ПАКЕТ --ignore ЗАВИСИМОСТЬ` | не ставить зависимость (xbps `ignorepkg`); навсегда, пока не убрать строку из `/etc/xbps.d/51-vh-pkg-ignore.conf` |
-| `doas vh-pkg add ПАКЕТ --keep ПУТЬ` | не трогать этот файл пакета при разборе |
-| `doas vh-pkg add ПАКЕТ -y` | без вопросов |
-| `doas vh-pkg scan ПАКЕТ…` | разобрать уже установленный пакет: SUID/SGID и capabilities снять, sysctl.d и опасные udev-правила замаскировать, хуки ядра/dracut/профиля шелла отключить, сервисы и автозапуск показать |
+| `doas vh-pkg add ПАКЕТ --keep ПУТЬ` | = `thor keep ПУТЬ` перед установкой |
+| `doas vh-pkg scan ПАКЕТ…` | снять SUID и capabilities, вернувшиеся мимо xbps (`vh-suid-strip`); разбор файлов делает thor при установке |
 | `doas vh-pkg rm ПАКЕТ…` | удалить пакет с зависимостями и сиротами; изменённые конфиги — в журнал для `vh-deep-clean` |
 
 ### Очистка — [12-daily.md](12-daily.md#11-очистка-vh-deep-clean)
@@ -530,8 +540,8 @@ cryptsetup close cryptroot
 ```
 
 Обновить netline из live: после `cryptsetup open` и `mount` (без chroot) —
-`./install/build-netline.sh /mnt`. Так же обновляются инструменты на C (компилятора в
-системе нет): `./install/build-tools.sh /mnt`.
+`./install/build-netline.sh /mnt`. Так же обновляются инструменты на Zig и thor (компилятора
+в системе нет): `./install/build-tools.sh /mnt`, `./install/build-thor.sh /mnt`.
 
 Если сломан заголовок LUKS — `cryptsetup luksHeaderRestore /dev/nvme0n1p2
 --header-backup-file luks-header.img` из резервной копии ([01-disk.md](01-disk.md)).
@@ -568,7 +578,7 @@ cryptsetup close cryptroot
 | `VH_ZRAM_ALGO`, `VH_ZRAM_PERCENT` | `zstd`, `50` | zram |
 | `VH_HOME_NOEXEC` | `yes` | `/home` без исполнения |
 | `VH_DEV_DIR` | — | каталог в домашнем, где исполнение разрешено (для разработки) |
-| `VH_NETLINE`, `VH_NETLINE_REPO`, `VH_NETLINE_REF`, `VH_ZIG_VERSION` | `yes`, …, `lite`, `0.16.0` | бар netline и чем его собирать |
+| `VH_NETLINE`, `VH_NETLINE_REPO`, `VH_NETLINE_REF`, `VH_ZIG_VERSION` | `yes`, …, `lite`, `0.16.0` | бар netline и чем его собирать (свои инструменты и thor собираются Zig из `zig/ZIG_VERSION`, сейчас 0.17.0) |
 | `VH_TEST_SERIAL` | `no` | консоль на последовательном порту (только VM-стенд) |
 
 После установки значения сохранены в `/etc/vh/vh.env`.
@@ -611,10 +621,11 @@ cryptsetup close cryptroot
 | `python3 tests/vm/vhvm.py install --iso VOID.iso [--netline] [--conf 'VH_X="y"']` | установить систему в qemu (OVMF с Secure Boot, swtpm, NVMe) |
 | `python3 tests/vm/vhvm.py boot` | загрузить установленную VM |
 | `python3 tests/vm/vhvm.py shell --run 'КОМАНДА'` | загрузить и выполнить команды через последовательную консоль |
-| `sh tests/c/run.sh [--fuzz N]` | инструменты на C: сборка, дифференциальные тесты против Python-эталона, фаззинг прокси под ASan (нужен docker) |
-| `sh tests/c/build.sh` | собрать инструменты на C в `build/` для `check.py --repo` |
-| `python3 tests/vm/check.py ШАГ [--repo]` | проверка: `base`, `ctools`, `enroll`, `sb`, `lock`, `desktop`, `strictnet`, `deadman`, `deadmandump`, `totp`, `modules`, `pkg`. `--repo` — сначала обновить скрипты в VM из рабочей копии |
+| `sh tests/zig/run.sh` | инструменты на Zig: юнит-тесты, дифференциальные тесты против C-эталона из истории git, фаззинг прокси (нужен docker) |
+| `sh tests/thor/run.sh` | thor: политика на тестовых пакетах, параллельная загрузка и запасное зеркало, замена xbps на системе Void, vh-pkg |
+| `sh tests/zig/build.sh` | собрать x86_64-инструменты и пакет thor в `build/` для `check.py --repo` |
+| `python3 tests/vm/check.py ШАГ [--repo]` | проверка: `thor`, `base`, `ctools`, `enroll`, `sb`, `lock`, `desktop`, `strictnet`, `deadman`, `deadmandump`, `totp`, `modules`, `pkg`, `clean`. `--repo` — сначала обновить скрипты в VM из рабочей копии |
 
 Общие ключи стенда: `--dir КАТАЛОГ` (по умолчанию `tests/vm/work`), `--mem`, `--smp`.
-`vh-hashpw` (`src/vh-hashpw.c`) — хэш пароля для автоматической установки на стенде, на настоящем
+`vh-hashpw` (`zig/tools/vh-hashpw.zig`) — хэш пароля для автоматической установки на стенде, на настоящем
 железе не нужен.

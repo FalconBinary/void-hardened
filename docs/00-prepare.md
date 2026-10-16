@@ -272,8 +272,10 @@ python3 tests/vm/vhvm.py install --iso void-live-x86_64-20250202-base.iso --netl
 python3 tests/vm/check.py all             # base, enroll, sb, lock, desktop
 python3 tests/vm/check.py deadman         # дамп RAM после выключения: без модуля и с ним
 python3 tests/vm/check.py totp --repo     # tpm2-totp на swtpm (--repo: свежие файлы в VM)
-sh tests/c/build.sh                       # инструменты на C для --repo (через docker)
-sh tests/c/run.sh                         # тесты инструментов на C против Python-эталона (docs/17)
+sh tests/zig/build.sh                     # инструменты на Zig и пакет thor для --repo (через docker)
+sh tests/zig/run.sh                       # тесты инструментов на Zig против C-эталона (docs/17)
+sh tests/thor/run.sh                      # тесты thor: политика, загрузка, замена xbps (docs/18)
+python3 tests/vm/check.py thor --repo     # перевод системы в VM на thor (docs/18)
 ```
 
 Стенд поднимает VM с NVMe-диском, пустой прошивкой в Setup Mode и TPM, грузит

@@ -23,8 +23,9 @@ Limine (подписан, хэш конфига вписан) → UKI (ядро 
 | Рабочий стол | seatd (без elogind и polkit) + **mango** + **netline** (панель на Zig, 0 пробуждений в простое), swaylock/swayidle, PipeWire |
 | Браузер | Firefox от отдельного пользователя в bwrap без user namespace, Wayland только через фильтрующий прокси (в mango нет security-context), звук без микрофона, AppArmor, политики, одноразовый профиль без JIT для недоверенных сайтов |
 | Удобство | крышка → блокировка, кнопка питания → штатное выключение, яркость и звук без root, Bluetooth по требованию, обновление одной командой `doas vh-update`, проверка всего — `doas vh-audit` |
-| Минимализм | ~13 сервисов, нет systemd, polkit, sudo, ssh-сервера, cron, компиляторов и интерпретаторов вроде Python; прошивки — только нужные этому ноутбуку |
-| Свои инструменты | на C со всеми флагами защиты (прокси Wayland, демоны крышки и стирания ключа, обновление загрузчика, установка пакетов, очистка): ≈ 0,6 МБ на все 12 программ, по 1–1,5 МБ RAM на демон; собираются в RAM live-среды — [docs/17](docs/17-c-tools.md) |
+| Минимализм | ~13 сервисов, нет systemd, polkit, sudo, ssh-сервера, cron, компиляторов и интерпретаторов вроде Python (thor не даст их поставить); прошивки — только нужные этому ноутбуку |
+| Пакеты | **thor** — xbps с политикой безопасности внутри libxbps: SUID снимается до записи на диск, хуки ядра/dracut/profile.d — только из базового списка, sysctl.d и udev 0666 маскируются, чёрный список (компиляторы, polkit, cups…) — и при обновлениях; загрузка в 4 потока (192 пакета: 31 с против 68–85 с у xbps), запасные зеркала — [docs/18](docs/18-thor.md) |
+| Свои инструменты | на Zig (ReleaseSafe: проверки границ и переполнений в работающей программе): прокси Wayland, демоны крышки и стирания ключа, обновление загрузчика, установка пакетов, очистка; статические, 0,5–1 МБ RAM на демон; собираются в RAM live-среды без gcc — [docs/17](docs/17-zig-tools.md) |
 
 Параноидальные слои (включаются отдельно): строгая сеть, пиннинг УЦ для DNS/NTS, защита
 от BadUSB, FIDO2, ключи Secure Boot на отдельной флешке с проверкой сборки UKI,
@@ -105,24 +106,27 @@ HDMI, разведённом на NVIDIA) — `VH_GPU=nouveau` (глава [04](
 | [14](docs/14-prompt-review.md) | разбор исходного промпта: недочёты и решения |
 | [15](docs/15-cachyos.md) | производительность против CachyOS: честное сравнение и `tools/vh-bench` |
 | [16](docs/16-commands.md) | **справочник всех команд** — по этапам и ролям, с путями настроек |
-| [17](docs/17-c-tools.md) | инструменты системы на C: без Python в системе, замеры, флаги защиты, тесты |
+| [17](docs/17-zig-tools.md) | инструменты системы на Zig: без Python и компиляторов в системе, замеры, защита, тесты |
+| [18](docs/18-thor.md) | thor — пакетный менеджер: политика внутри libxbps, параллельная загрузка, зеркала |
 
 ## Структура репозитория
 
 ```
 install/        00-probe.sh (проба) · 10-install.sh (установка) · chroot.sh · 20-firstboot.sh
                 (Secure Boot) · 30-lock.sh (modules_disabled) · build-netline.sh · build-tools.sh
-                (инструменты на C) · lib.sh · packages.sh
-src/            инструменты системы на C: vh-wlfilter, vh-acpid, vh-deadman, vh-limine-update,
+                (инструменты на Zig) · build-thor.sh (thor) · fetch-zig.sh · lib.sh · packages.sh
+zig/            инструменты системы на Zig: vh-wlfilter, vh-acpid, vh-deadman, vh-limine-update,
                 vh-pkg, vh-deep-clean, vh-seccomp, vh-uki-verify, vh-open, vh-usb-udev,
-                pin-fetch; build.sh
+                pin-fetch, vh-hashpw; lib/ — общий код; build.zig
+thor/           пакетный менеджер: патч к xbps 0.60.7, политика (policy/), команда thor (src/)
 rootfs/         файлы, которые ложатся в систему (*.in — шаблоны с @VH_*@ из vh.conf)
 optional/       параноидальные модули: <модуль>/enable, disable; status
 tools/          vh-bench (сравнение скорости)
 tests/vm/       стенд qemu + OVMF (Secure Boot) + swtpm: vhvm.py — установка без участия
-                человека, check.py — проверки (base, ctools, enroll, sb, lock, desktop, strictnet,
-                deadman, deadmandump, totp, modules, pkg, clean)
-tests/c/        инструменты на C в docker: сборка, сравнение с Python-эталоном, фаззинг под ASan
+                человека, check.py — проверки (thor, base, ctools, enroll, sb, lock, desktop,
+                strictnet, deadman, deadmandump, totp, modules, pkg, clean)
+tests/zig/      инструменты на Zig в docker: юнит-тесты, сравнение с C-эталоном, фаззинг прокси
+tests/thor/     thor в docker: политика на тестовых пакетах, загрузка, замена xbps
 docs/           руководство
 vh.conf.example все настройки установщика с объяснениями
 ```
@@ -148,9 +152,12 @@ vh.conf.example все настройки установщика с объясн
 | tpm2-totp на swtpm: генерация в initramfs, код до пароля LUKS, работающая система код не вычисляет (PCR 14) | ✓ |
 | viewers (файл передаётся дескриптором, симлинк отвергается), home-lockdown, профиль session-apparmor, самопроверка фильтров seccomp (48 случаев) | ✓ |
 
-Инструменты на C дополнительно сверены с прежними Python-версиями байт в байт
-(`tests/c/run.sh`: шесть программ, сотни сценариев, фаззинг прокси Wayland под
-AddressSanitizer) — [docs/17](docs/17-c-tools.md#6-как-проверено).
+Инструменты на Zig дополнительно сверены с прежней C-версией байт в байт
+(`tests/zig/run.sh`: все 12 программ, сотни сценариев, фаззинг прокси Wayland), а C-версия
+в своё время — с Python-версией — [docs/17](docs/17-zig-tools.md#6-как-проверено).
+Политика thor проверена на тестовых пакетах с SUID, хуками и правилами udev, загрузка — на
+двух зеркалах с подменённым пакетом, замена xbps — на настоящей системе Void
+(`tests/thor/run.sh`) — [docs/18](docs/18-thor.md#6-как-проверено).
 
 Каждая из этих проверок однажды падала — найденные так ошибки перечислены в
 [главе 14](docs/14-prompt-review.md#5-что-найдено-прогоном-на-стенде).
