@@ -13,6 +13,7 @@ const Tool = struct { name: []const u8, libc: []const []const u8 = &.{} };
 const tools = [_]Tool{
     .{ .name = "vh-seccomp" },
     .{ .name = "vh-pkg" },
+    .{ .name = "vh-deep-clean" },
 };
 
 pub fn build(b: *std.Build) void {

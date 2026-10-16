@@ -331,6 +331,31 @@ pub fn readlink(path: []const u8) Error![]u8 {
 pub fn listDir(path: []const u8) Error![]const []const u8 {
     const fd = try openFd(path, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0);
     defer close(fd);
+    return listDirFd(fd);
+}
+
+/// открыть name относительно каталога dfd (O_CLOEXEC добавляется)
+pub fn openAt(dfd: fd_t, name: []const u8, flags: linux.O) Error!fd_t {
+    var f = flags;
+    f.CLOEXEC = true;
+    return @intCast(try sysRetry(linux.openat, .{ dfd, z(name).ptr, f, @as(mode_t, 0) }));
+}
+
+/// stat относительно каталога dfd; follow=false — сам симлинк
+pub fn statAt(dfd: fd_t, name: []const u8, follow: bool) Error!Stat {
+    var st: Stat = undefined;
+    const flags: u32 = if (follow) 0 else linux.AT.SYMLINK_NOFOLLOW;
+    _ = try sys(linux.statx(dfd, z(name).ptr, flags, .{ .TYPE = true, .MODE = true, .UID = true, .GID = true, .SIZE = true, .BLOCKS = true, .MTIME = true, .ATIME = true, .INO = true, .NLINK = true }, &st));
+    return st;
+}
+
+pub fn unlinkAt(dfd: fd_t, name: []const u8, dir: bool) Error!void {
+    _ = try sys(linux.unlinkat(dfd, z(name).ptr, if (dir) linux.AT.REMOVEDIR else 0));
+}
+
+/// Записи открытого каталога (без . и ..), в порядке getdents.
+pub fn listDirFd(fd: fd_t) Error![]const []const u8 {
+    _ = try sys(linux.lseek(fd, 0, linux.SEEK.SET));
     var names: std.ArrayList([]const u8) = .empty;
     var buf: [16384]u8 align(8) = undefined;
     while (true) {
@@ -346,6 +371,35 @@ pub fn listDir(path: []const u8) Error![]const []const u8 {
         }
     }
     return names.items;
+}
+
+/// строка из stdin (без перевода строки); null — конец ввода
+pub fn readLine() ?[]const u8 {
+    var line: std.ArrayList(u8) = .empty;
+    while (true) {
+        var c: [1]u8 = undefined;
+        const r = readFd(0, &c) catch return null;
+        if (r == 0) return if (line.items.len == 0) null else line.items;
+        if (c[0] == '\n') return line.items;
+        line.append(gpa, c[0]) catch oom();
+    }
+}
+
+/// Время UTC «ГГГГ-ММ-ДД ЧЧ:ММ:СС» (без libc нет localtime — часовой пояс не учитывается).
+pub fn utcTime(secs: i64) []u8 {
+    const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(@max(secs, 0)) };
+    const day = es.getEpochDay().calculateYearDay();
+    const md = day.calculateMonthDay();
+    const ds = es.getDaySeconds();
+    return fmt("{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{
+        day.year, md.month.numeric(), md.day_index + 1, ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
+    });
+}
+
+pub fn now() i64 {
+    var ts: linux.timespec = undefined;
+    _ = linux.clock_gettime(.REALTIME, &ts);
+    return ts.sec;
 }
 
 // ---------------------------------------------------------------- строки
