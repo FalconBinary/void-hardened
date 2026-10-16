@@ -698,7 +698,7 @@ fn restoreSignal(sig: linux.SIG, old: linux.Sigaction) void {
 
 /// закрыть все fd ≥ from (перед exec программы с меньшими правами)
 pub fn closeFdsFrom(from: fd_t) void {
-    if (linux.errno(linux.close_range(from, std.math.maxInt(fd_t), .{})) == .SUCCESS) return;
+    if (linux.errno(linux.close_range(from, std.math.maxInt(fd_t), .{ .UNSHARE = false, .CLOEXEC = false })) == .SUCCESS) return;
     var fd: fd_t = from;
     while (fd < 1024) : (fd += 1) close(fd);
 }

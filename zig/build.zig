@@ -18,6 +18,7 @@ const tools = [_]Tool{
     .{ .name = "vh-open" },
     .{ .name = "vh-limine-update" },
     .{ .name = "vh-uki-verify" },
+    .{ .name = "vh-acpid" },
 };
 
 pub fn build(b: *std.Build) void {
