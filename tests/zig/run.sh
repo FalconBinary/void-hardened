@@ -37,6 +37,9 @@ docker run --rm --privileged -v "$repo:/src:ro" -v "$out:/t:ro" "$img" sh -c '
 	sh /src/tests/c/limine_diff.sh $C/vh-limine-update $Z/vh-limine-update
 	echo "== vh-uki-verify"
 	python3 /src/tests/c/uki_diff.py $C/vh-uki-verify $Z/vh-uki-verify
+	echo "== vh-deadman: структуры ядра и режим test"
+	gcc -o /tmp/dm /src/tests/zig/dm_check.c && [ "$(/tmp/dm)" = "312 0xc138fd06 0xc138fd0e 3074" ] && echo "ok dm_ioctl: размер, DM_DEV_SUSPEND, DM_TARGET_MSG, флаги" || { echo "РАЗЛИЧИЕ dm_ioctl: $(/tmp/dm)"; exit 1; }
+	[ "$($Z/vh-deadman test 2>&1)" = "$($C/vh-deadman test 2>&1)" ] && echo "ok vh-deadman test совпадает" || { echo "РАЗЛИЧИЕ vh-deadman test"; $Z/vh-deadman test; $C/vh-deadman test; exit 1; }
 	echo "== vh-usb-udev"
 	sh /src/tests/c/usb_diff.sh $C/vh-usb-udev $Z/vh-usb-udev
 	echo "== vh-open"
