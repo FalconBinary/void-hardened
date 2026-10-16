@@ -75,6 +75,11 @@ def root_shell(ser):
     ser.expect(r"vh# ", 60)
 
 
+# из build/ в VM нужны только готовые программы и build/thor-repo (tests/zig/build.sh)
+VM_SKIP_BUILD = ["docker-ctx", "zig-dl", "xbps-dl", "devimg", "zig-test", "zt", "zt2", "zx", "zig-bin",
+                 "thor-work", "thor-dest", "*.log"]
+
+
 def boot(a, extra=None):
     vm = vhvm.VM(a.dir, a.mem, a.smp)
     extra = list(extra or [])
@@ -85,7 +90,8 @@ def boot(a, extra=None):
             sys.exit("нет build/ — соберите инструменты и thor: sh tests/zig/build.sh")
         tar = os.path.join(vm.d, "repo.tar")
         flags = ["--no-xattrs"] + (["--no-fflags", "--no-mac-metadata"] if sys.platform == "darwin" else [])
-        subprocess.run(["tar", *flags, "-cf", tar, "--exclude", ".git", "--exclude", "__pycache__",
+        subprocess.run(["tar", *flags, "-cf", tar, "--exclude", ".git", "--exclude", "__pycache__", "--exclude", ".zig-cache",
+                        "--exclude", "zig-out", *[x for d in VM_SKIP_BUILD for x in ("--exclude", f"build/{d}")],
                         "-C", os.path.dirname(vhvm.REPO), os.path.basename(vhvm.REPO)], check=True,
                        env=dict(os.environ, COPYFILE_DISABLE="1"))
         extra += ["-drive", f"file={tar},if=none,id=repo,format=raw,readonly=on",
@@ -545,11 +551,15 @@ def step_thor(a):
               out[-400:].replace("\n", " | "))
         rc, out = run(ser, "xbps-pkgdb -a; echo pkgdb=$?", timeout=900)
         check("xbps-pkgdb -a после замены", "pkgdb=0" in out, out[-300:].replace("\n", " | "))
-        rc, out = run(ser, "{ [ -e /etc/vh/optional/strict-net ] && vh-net xbps 30; true; }; thor install -y tree htop 2>&1 | tail -12; xbps-query tree >/dev/null && echo HAS_TREE", timeout=1800)
-        check("thor install: параллельная загрузка и установка", "HAS_TREE" in out and "Загрузка" in out and "Скачано" in out,
+        rc, out = run(ser, "{ [ -e /etc/vh/optional/strict-net ] && vh-net xbps 30; true; }; rm -f /var/cache/xbps/tree-* /var/cache/xbps/htop-*; thor install -y tree htop > /tmp/ti.log 2>&1; "
+                           "grep -v '^x86_64-repodata\\|^\\[\\*\\]\\|unpacking\\|configuring\\|installed succ\\|verifying\\|collecting\\|^$' /tmp/ti.log | head -12; "
+                           "xbps-query tree >/dev/null && echo HAS_TREE", timeout=1800)
+        check("thor install: параллельная загрузка и установка",
+              "HAS_TREE" in out and "Загрузка 2 пакетов" in out and "Скачано" in out and "] tree-" in out and "] htop-" in out,
               out[-600:].replace("\n", " | "))
-        rc, out = run(ser, "thor install -y polkit; echo rc=$?", timeout=900)
-        check("thor: polkit запрещён", "запрещён" in out and "rc=0" not in out, out[-300:].replace("\n", " | "))
+        rc, out = run(ser, "thor install -y polkit; echo POLKIT_RC=$?; xbps-query polkit >/dev/null 2>&1 || echo NO_POLKIT", timeout=900)
+        check("thor: polkit запрещён", "запрещён" in out and "POLKIT_RC=0" not in out and "NO_POLKIT" in out,
+              out[-300:].replace("\n", " | "))
         rc, out = run(ser, "xbps-reconfigure -f $(. /etc/vh/vh.env; echo $VH_KERNEL) 2>&1 | tail -6", timeout=1800)
         check("xbps-reconfigure ядра с thor → UKI и Limine", "вписан в Limine" in out, out[-500:].replace("\n", " | "))
         rc, out = run(ser, "doas vh-audit", timeout=600)
