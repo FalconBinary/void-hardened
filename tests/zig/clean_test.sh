@@ -1,6 +1,6 @@
 #!/bin/sh
 # Тест vh-deep-clean на настоящем xbps: что удаляется, что остаётся, резерв и restore.
-#   sh tests/c/clean_test.sh КАТАЛОГ_СБОРКИ
+#   sh tests/zig/clean_test.sh КАТАЛОГ_СБОРКИ
 # Только в одноразовом контейнере Void: ставит и удаляет пакеты, заводит пользователей,
 # пишет в /etc, /var/lib/vh, /var/cache/xbps.
 set -u

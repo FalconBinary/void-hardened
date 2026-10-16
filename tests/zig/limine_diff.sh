@@ -1,6 +1,6 @@
 #!/bin/sh
-# Дифференциальный тест vh-limine-update: эталон (Python) против C-версии.
-#   sh tests/c/limine_diff.sh "ЭТАЛОН" ПРОВЕРЯЕМЫЙ
+# Дифференциальный тест vh-limine-update: эталон (C, из истории git) против Zig-версии.
+#   sh tests/zig/limine_diff.sh "ЭТАЛОН" ПРОВЕРЯЕМЫЙ
 # Только в одноразовом контейнере с --privileged: монтирует tmpfs на /boot/efi и
 # подменяет sbctl и limine в /usr/bin заглушками.
 set -eu

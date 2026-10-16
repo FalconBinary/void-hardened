@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Замер vh-wlfilter: CPU и память прокси на потоке сообщений Wayland.
 
-  python3 tests/c/bench_wlfilter.py "КОМАНДА ПРОКСИ" [СООБЩЕНИЙ]
+  python3 tests/zig/bench_wlfilter.py "КОМАНДА ПРОКСИ" [СООБЩЕНИЙ]
 
 Клиент шлёт поток коротких запросов (как wl_surface.attach/damage/commit), композитор
 отвечает событиями (как wl_callback.done и wl_pointer.motion). Считается процессорное время

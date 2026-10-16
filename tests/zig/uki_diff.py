@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Дифференциальный тест vh-uki-verify: эталон (Python) против C-версии.
+"""Дифференциальный тест vh-uki-verify: эталон (C, из истории git) против Zig-версии.
 
-  python3 tests/c/uki_diff.py "ЭТАЛОН" ПРОВЕРЯЕМЫЙ
+  python3 tests/zig/uki_diff.py "ЭТАЛОН" ПРОВЕРЯЕМЫЙ
 
 Только в одноразовом контейнере: пишет в /etc, /run/vh-keys. Синтетическая UKI —
 PE с секциями .cmdline, .uname, .initrd (ранний cpio + cpio, сжатый zstd).
