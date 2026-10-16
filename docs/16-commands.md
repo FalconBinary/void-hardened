@@ -578,7 +578,7 @@ cryptsetup close cryptroot
 | `VH_ZRAM_ALGO`, `VH_ZRAM_PERCENT` | `zstd`, `50` | zram |
 | `VH_HOME_NOEXEC` | `yes` | `/home` без исполнения |
 | `VH_DEV_DIR` | — | каталог в домашнем, где исполнение разрешено (для разработки) |
-| `VH_NETLINE`, `VH_NETLINE_REPO`, `VH_NETLINE_REF`, `VH_ZIG_VERSION` | `yes`, …, `lite`, `0.16.0` | бар netline и чем его собирать (свои инструменты и thor собираются Zig из `zig/ZIG_VERSION`, сейчас 0.17.0) |
+| `VH_NETLINE`, `VH_NETLINE_REPO`, `VH_NETLINE_REF` | `yes`, …, `lite` | бар netline; собирается тем же Zig, что свои инструменты и thor (`zig/ZIG_VERSION`, сейчас 0.17.0) |
 | `VH_TEST_SERIAL` | `no` | консоль на последовательном порту (только VM-стенд) |
 
 После установки значения сохранены в `/etc/vh/vh.env`.

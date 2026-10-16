@@ -256,7 +256,7 @@ FUSE — закрыт), `--cap-drop ALL`, `--clearenv`, `--new-session` (нет 
 Панель (`netline`, `zrun`, `zwifi`, `zbt`, `zwall`, `zbg`, `zpower`, `zcal`) — ваш проект на
 Zig. Сборка — в RAM live-среды при установке (`install/build-netline.sh`):
 
-- в репозитории Void есть только zig 0.13, а netline нужен 0.16 — компилятор
+- в репозитории Void есть только zig 0.13, а netline нужен 0.17 (тот же, что для своих инструментов и thor, `zig/ZIG_VERSION`) — компилятор
   скачивается с ziglang.org и проверяется подписью **minisign** и SHA-256;
 - в установленную систему попадают только готовые бинарники (`/usr/local/bin`, root,
   0755) и их хэши в `/etc/vh/netline.sha256`. Компилятора в системе нет;

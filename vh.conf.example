@@ -93,7 +93,6 @@ VH_DEV_DIR=""
 VH_NETLINE="yes"
 VH_NETLINE_REPO="https://github.com/FalconBinary/netline.git"
 VH_NETLINE_REF="lite"
-VH_ZIG_VERSION="0.16.0"
 
 # ---------------------------------------------------------------- только для VM-тестов
 # yes — вход админа на последовательной консоли ttyS0 (стенд tests/vm). На железе — no.

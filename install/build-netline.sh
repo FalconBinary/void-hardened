@@ -2,7 +2,7 @@
 # Сборка netline в RAM live-среды и установка готовых бинарников в целевой корень.
 #   build-netline.sh /mnt
 #
-# Почему так: в репозитории Void есть только zig 0.13, а netline нужен 0.16,
+# Почему так: в репозитории Void есть только zig 0.13, а netline нужен 0.17,
 # и в установленной системе компилятора быть не должно (docs/08). Компилятор
 # скачивается с ziglang.org (install/fetch-zig.sh: подпись minisign и контрольная
 # сумма), живёт в /tmp (RAM) и исчезает после перезагрузки. Сборка — то же, что
@@ -18,7 +18,9 @@ command -v git >/dev/null || xbps-install -Sy git >/dev/null || die "не уда
 WORK=$(mktemp -d /tmp/vh-netline.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 # компилятор: загрузка, подпись minisign и контрольная сумма — install/fetch-zig.sh
-ZIG=$(bash "$VH_ROOT/install/fetch-zig.sh" "$VH_ZIG_VERSION" "$WORK/zig")
+# тот же Zig и тот же каталог, что у build-tools.sh и build-thor.sh: один компилятор на всё
+ZIG_VERSION=$(cat "$VH_ROOT/zig/ZIG_VERSION")
+ZIG=$(bash "$VH_ROOT/install/fetch-zig.sh" "$ZIG_VERSION" /tmp/vh-zig)
 cd "$WORK"
 "$ZIG" version
 
@@ -48,7 +50,7 @@ for b in "$WORK"/out/bin/*; do
 	install -m 0755 -o root -g root "$b" "$TARGET/usr/local/bin/"
 done
 {
-	echo "# netline $commit, zig $VH_ZIG_VERSION, собрано $(date -u +%Y-%m-%dT%H:%MZ)"
+	echo "# netline $commit, zig $ZIG_VERSION, собрано $(date -u +%Y-%m-%dT%H:%MZ)"
 	( cd "$TARGET/usr/local/bin" && for b in "$WORK"/out/bin/*; do sha256sum "$(basename "$b")"; done )
 } > "$TARGET/etc/vh/netline.sha256"
 ok "$(ls "$WORK/out/bin" | tr '\n' ' ')"
