@@ -27,9 +27,18 @@ const ATTACH_DIR = "/run/vh/usb-attach";
 /// сообщение в журнал ядра (как C: сообщение до 511 байт, строка до 599)
 fn klog(comptime f: []const u8, args: anytype) void {
     const full = vh.fmt(f, args);
-    const m = full[0..@min(full.len, 511)];
-    var line = vh.fmt("<5>vh-usb: {s}\n", .{m});
-    if (line.len > 599) line = line[0..599];
+    // строки производителя и товара пишет само устройство: управляющие байты
+    // (перевод строки, ESC) в журнал не пропускаем
+    var buf: [600]u8 = undefined;
+    const pre = "<5>vh-usb: ";
+    @memcpy(buf[0..pre.len], pre);
+    var n: usize = pre.len;
+    for (full[0..@min(full.len, 511)]) |ch| {
+        buf[n] = if (ch < 0x20 or ch == 0x7f) '?' else ch;
+        n += 1;
+    }
+    buf[n] = '\n';
+    const line = buf[0 .. n + 1];
     const fd = vh.openFd("/dev/kmsg", .{ .ACCMODE = .WRONLY }, 0) catch return;
     defer vh.close(fd);
     vh.writeAllFd(fd, line) catch {};
@@ -58,8 +67,9 @@ pub fn interfaces(raw: []const u8) Ifs {
     var off: usize = 0;
     while (off + 2 <= raw.len) {
         const ln: usize = raw[off];
-        if (ln < 2) break;
-        if (raw[off + 1] == 4 and ln >= 9 and off + 9 <= raw.len) { // INTERFACE
+        // дескриптор, выходящий за буфер, — обрыв или подделка: дальше не разбираем
+        if (ln < 2 or off + ln > raw.len) break;
+        if (raw[off + 1] == 4 and ln >= 9) { // INTERFACE
             if (r.n == 0) {
                 r.cls0 = raw[off + 5];
                 r.proto0 = raw[off + 7];
@@ -143,4 +153,6 @@ test "дескрипторы: обрыв и нулевая длина" {
     try std.testing.expectEqual(@as(usize, 0), interfaces(&[_]u8{ 9, 4, 0 }).n);
     try std.testing.expectEqual(@as(usize, 0), interfaces(&[_]u8{ 0, 4 }).n);
     try std.testing.expectEqual(@as(usize, 0), interfaces(&[_]u8{ 255, 4, 1, 2, 3, 4, 5, 6, 7 }).n);
+    // интерфейс обрезан посередине (bLength 9, байтов 8) — не считается
+    try std.testing.expectEqual(@as(usize, 0), interfaces(&[_]u8{ 9, 2, 0, 0, 1, 1, 0, 0x80, 0x32, 9, 4, 0, 0, 1, 3, 0 }).n);
 }
