@@ -33,6 +33,8 @@ docker run --rm --privileged -v "$repo:/src:ro" -v "$out:/t:ro" "$img" sh -c '
 		|| { echo "РАЗЛИЧИЕ --selftest"; exit 1; }
 	r1=0; r2=0; $Z/vh-seccomp x 2>/tmp/e1 || r1=$?; $C/vh-seccomp x 2>/tmp/e2 || r2=$?
 	[ "$r1" = "$r2" ] && cmp -s /tmp/e1 /tmp/e2 && echo "ok ошибка аргумента совпадает" || { echo "РАЗЛИЧИЕ ошибки"; exit 1; }
+	echo "== vh-limine-update"
+	sh /src/tests/c/limine_diff.sh $C/vh-limine-update $Z/vh-limine-update
 	echo "== vh-usb-udev"
 	sh /src/tests/c/usb_diff.sh $C/vh-usb-udev $Z/vh-usb-udev
 	echo "== vh-open"
