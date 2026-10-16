@@ -21,12 +21,17 @@ const tools = [_]Tool{
     .{ .name = "vh-acpid" },
     .{ .name = "vh-deadman" },
     .{ .name = "vh-wlfilter" },
+    .{ .name = "pin-fetch", .libc = &.{ "ssl", "crypto" } },
+    .{ .name = "vh-hashpw", .libc = &.{"crypt"} },
 };
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{ .default_target = .{ .cpu_arch = .x86_64, .os_tag = .linux } });
     // по умолчанию ReleaseSafe (а не Debug): проверки границ и переполнений, оптимизация
     const optimize = b.option(std.builtin.Optimize, "optimize", "режим сборки (safe = ReleaseSafe)") orelse .safe;
+    // программы на библиотеках системы (OpenSSL, libxcrypt) — только там, где есть их
+    // заголовки и библиотеки: в live-среде и в контейнере тестов, не на машине разработчика
+    const libc_tools = b.option(bool, "libc-tools", "собрать pin-fetch и vh-hashpw (нужны openssl-devel, libxcrypt-devel)") orelse false;
 
     var mods: [libs.len]*std.Build.Module = undefined;
     for (libs, 0..) |name, i|
@@ -37,6 +42,7 @@ pub fn build(b: *std.Build) void {
     const tests_step = b.step("tests", "юнит-тесты: только собрать (tests/zig/run.sh запускает их в контейнере)");
 
     for (tools) |t| {
+        if (t.libc.len > 0 and !libc_tools) continue;
         const mod = b.createModule(.{
             .root_source_file = b.path(b.fmt("tools/{s}.zig", .{t.name})),
             .target = target,

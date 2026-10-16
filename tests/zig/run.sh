@@ -44,6 +44,17 @@ docker run --rm --privileged -v "$repo:/src:ro" -v "$out:/t:ro" "$img" sh -c '
 	echo "== vh-deadman: структуры ядра и режим test"
 	gcc -o /tmp/dm /src/tests/zig/dm_check.c && [ "$(/tmp/dm)" = "312 0xc138fd06 0xc138fd0e 3074" ] && echo "ok dm_ioctl: размер, DM_DEV_SUSPEND, DM_TARGET_MSG, флаги" || { echo "РАЗЛИЧИЕ dm_ioctl: $(/tmp/dm)"; exit 1; }
 	[ "$($Z/vh-deadman test 2>&1)" = "$($C/vh-deadman test 2>&1)" ] && echo "ok vh-deadman test совпадает" || { echo "РАЗЛИЧИЕ vh-deadman test"; $Z/vh-deadman test; $C/vh-deadman test; exit 1; }
+	echo "== pin-fetch, vh-hashpw (OpenSSL, libxcrypt системы — сборка здесь)"
+	cp -R /src/zig /tmp/zs && (cd /tmp/zs && zig build -Dtarget=native -Dlibc-tools=true --prefix /tmp/zl >/dev/null)
+	$Z/../bin/vh-seccomp --selftest >/dev/null
+	a=$(/tmp/zl/bin/pin-fetch 1.1.1.1 853 cloudflare-dns.com 2>/tmp/a2); b=$($C/pin-fetch 1.1.1.1 853 cloudflare-dns.com 2>/tmp/b2)
+	[ -n "$a" ] && [ "$a" = "$b" ] && cmp -s /tmp/a2 /tmp/b2 && echo "ok pin-fetch: PEM и сводка совпадают с C ($(cut -d: -f1-3 /tmp/a2 | head -c 60)…)" \
+		|| { echo "РАЗЛИЧИЕ pin-fetch"; cat /tmp/a2 /tmp/b2; exit 1; }
+	r1=0; r2=0; /tmp/zl/bin/pin-fetch 1.1.1.1 853 example.com >/dev/null 2>/tmp/a3 || r1=$?; $C/pin-fetch 1.1.1.1 853 example.com >/dev/null 2>/tmp/b3 || r2=$?
+	[ "$r1" = "$r2" ] && [ "$r1" != 0 ] && cmp -s /tmp/a3 /tmp/b3 && echo "ok pin-fetch: чужое имя — отказ, как в C" || { echo "РАЗЛИЧИЕ pin-fetch (имя)"; cat /tmp/a3 /tmp/b3; exit 1; }
+	gcc -o /tmp/cc /src/tests/zig/crypt_check.c -lcrypt
+	h=$(printf "пароль 1" | /tmp/zl/bin/vh-hashpw 5)
+	case $h in "\$y\$"*) /tmp/cc "пароль 1" "$h" && echo "ok vh-hashpw: yescrypt, libcrypt подтверждает" || { echo "РАЗЛИЧИЕ vh-hashpw: не проверяется"; exit 1; } ;; *) echo "РАЗЛИЧИЕ vh-hashpw: $h"; exit 1 ;; esac
 	echo "== vh-usb-udev"
 	sh /src/tests/c/usb_diff.sh $C/vh-usb-udev $Z/vh-usb-udev
 	echo "== vh-open"
