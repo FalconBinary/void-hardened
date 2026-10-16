@@ -40,7 +40,9 @@ case ${1:-} in
 	xbps)
 		m=$(minutes "${2:-30}")
 		nft add element inet vh dns_tmp "{ 0 timeout ${m}m }"
-		hosts=$(sed -n 's|^repository=https://\([^/:]*\).*|\1|p' /etc/xbps.d/*.conf | sort -u)
+		# зеркала xbps и запасные зеркала thor (thor mirror --write, docs/18)
+		hosts=$( { sed -n 's|^repository=https://\([^/:]*\).*|\1|p' /etc/xbps.d/*.conf
+			sed -n 's|^mirror-fallback=https://\([^/:]*\).*|\1|p' /etc/thor/thor.conf 2>/dev/null; } | sort -u)
 		[ -n "$hosts" ] || { echo "vh-net: в /etc/xbps.d нет https-зеркал" >&2; exit 1; }
 		n=0
 		for h in $hosts; do

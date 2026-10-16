@@ -8,7 +8,7 @@
 #  2. дифференциальные тесты против C-эталона (src/, собранного gcc в контейнере).
 set -eu
 repo=$(cd "$(dirname "$0")/../.." && pwd)
-IMAGE=ghcr.io/void-linux/void-glibc-full:latest
+IMAGE=$(sh "$(dirname "$0")/../docker/build.sh")
 case $(uname -m) in arm64|aarch64) arch=aarch64 plat=linux/arm64 ;; *) arch=x86_64 plat=linux/amd64 ;; esac
 out=$repo/build/zig-test       # внутри репозитория: временные каталоги macOS docker не видит
 rm -rf "$out"

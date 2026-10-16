@@ -10,7 +10,8 @@ const tools = [_][]const u8{};
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{ .default_target = .{ .cpu_arch = .x86_64, .os_tag = .linux } });
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
+    // по умолчанию ReleaseSafe (а не Debug): проверки границ и переполнений, оптимизация
+    const optimize = b.option(std.builtin.Optimize, "optimize", "режим сборки (safe = ReleaseSafe)") orelse .safe;
 
     const vh = b.createModule(.{ .root_source_file = b.path("lib/vh.zig"), .target = target, .optimize = optimize });
     const hash = b.createModule(.{ .root_source_file = b.path("lib/hash.zig"), .target = target, .optimize = optimize });
@@ -23,6 +24,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .pic = true,
             .omit_frame_pointer = false,
+            .strip = true,
         });
         mod.addImport("vh", vh);
         mod.addImport("hash", hash);

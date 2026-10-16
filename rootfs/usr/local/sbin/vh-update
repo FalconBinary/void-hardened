@@ -18,6 +18,12 @@ grep -q '^KEYS_OFFLINE=yes' /etc/vh/boot.conf 2>/dev/null && offline=1
 [ -e /etc/vh/optional/strict-net ] && /usr/local/sbin/vh-net xbps 30
 echo "==> синхронизация репозиториев и список обновлений"
 xbps-install -S >/dev/null
+# thor основан на xbps 0.60.7: вышел новый xbps — пересобрать thor с флешки (docs/18)
+up=$(xbps-query -R -p pkgver xbps 2>/dev/null | sed -n 's/^xbps-\([0-9]\)/\1/p')
+base=$(thor --version | awk '{print $2}' | sed 's/\.[0-9]*$//')
+if [ -n "$up" ] && [ -n "$base" ] && [ "$(xbps-uhelper cmpver "${up%_*}" "$base"; echo $?)" = 1 ]; then
+	echo "  !! в репозитории xbps $up, thor основан на $base — пересоберите thor (docs/18, раздел «Обновление»)"
+fi
 updates=$(xbps-install -un 2>/dev/null | awk '{print $1}')
 if [ -z "$updates" ]; then
 	echo "обновлений нет"
@@ -38,18 +44,18 @@ read -r a
 case $a in y|Y|д|Д) ;; *) exit 1 ;; esac
 
 if [ "$offline" = 1 ] && [ $((rebuild + kver_updated)) -gt 0 ]; then
-	echo "==> скачивание пакетов в кэш (сеть ещё есть)"
-	xbps-install -yuD xbps
-	xbps-install -yuD
+	echo "==> скачивание пакетов в кэш (сеть ещё есть, параллельно — thor)"
+	thor fetch -u
 	printf 'Вставьте носитель с ключами Secure Boot и нажмите Enter… '
 	read -r _
 	/usr/local/sbin/vh-keys mount
 	trap '/usr/local/sbin/vh-keys umount' EXIT INT TERM
 fi
 
-echo "==> установка"
-xbps-install -yu xbps
-xbps-install -yu
+echo "==> установка (thor: параллельная загрузка, политика безопасности)"
+# новый thor из локального репозитория — первым (как xbps-install -u xbps)
+xbps-install -yu thor
+thor update -y
 if [ "$rebuild" = 1 ] && [ "$kver_updated" = 0 ]; then
 	echo "==> обновились компоненты initramfs/загрузчика — пересборка UKI"
 	xbps-reconfigure -f "$VH_KERNEL"

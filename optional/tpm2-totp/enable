@@ -12,6 +12,9 @@ LOCK_PCR=14
 case ",$PCRS," in *",$LOCK_PCR,"*) ;; *) die "PCRS должен включать PCR $LOCK_PCR" ;; esac
 
 say "пакет tpm2-totp"
+# модуль dracut пакета — намеренно в initramfs: политика thor (docs/18) без разрешения
+# его не распакует
+command -v thor >/dev/null && thor keep /usr/lib/dracut/modules.d/70tpm2-totp/ >/dev/null
 xbps-install -Sy tpm2-totp
 
 cur=$(tpm2_pcrread "sha256:$LOCK_PCR" | awk '/0x/ {print $NF}')

@@ -7,7 +7,8 @@
 #
 # Что делает (руками то же самое — docs/01…docs/03):
 #   1. размечает диск GPT: ESP (FAT32) + LUKS2 (XFS внутри), без swap-раздела;
-#   2. ставит пакеты в /mnt с HTTPS-зеркала, ключи xbps — из live-среды;
+#   2. собирает thor (xbps + политика безопасности, docs/18) в RAM live-среды и ставит
+#      через него пакеты в /mnt с HTTPS-зеркала — параллельно, ключи xbps — из live-среды;
 #   3. собирает netline компилятором Zig в RAM live-среды (в систему он не попадает);
 #   4. в chroot настраивает систему (install/chroot.sh): пользователи, PAM, сеть,
 #      sysctl, AppArmor, UKI, ключи Secure Boot, Limine, запись в NVRAM.
@@ -71,7 +72,8 @@ EOF
 say "утилиты live-среды (ставятся в RAM)"
 run xbps-install -Syu xbps
 run xbps-install -Sy cryptsetup xfsprogs dosfstools
-[ "$VH_NETLINE" = yes ] && run xbps-install -Sy git minisign xz
+run xbps-install -Sy minisign xz
+[ "$VH_NETLINE" = yes ] && run xbps-install -Sy git
 
 # ---------------------------------------------------------------- разметка
 say "разметка $VH_DISK (GPT: ESP + LUKS2)"
@@ -165,11 +167,24 @@ if [ "$VH_FIRMWARE_TRIM" = yes ]; then
 	else vh_firmware_noextract > "$MNT/etc/xbps.d/40-vh-firmware.conf"; fi
 fi
 
-say "установка пакетов ($(vh_packages | wc -l) шт. + зависимости), без ядра"
+say "thor: сборка в RAM live-среды (docs/18)"
+run bash "$VH_ROOT/install/build-thor.sh" "$MNT"
+THOR=/tmp/vh-thor/dest/usr/bin/thor
+# Политика thor на время установки — в режиме learn: хуки ядра, модули dracut, sysctl.d
+# и правила udev пакетов базовой системы записываются в /etc/thor/baseline, а не
+# обезвреживаются. SUID/SGID, capabilities и чёрный список действуют уже сейчас.
+if [ "$DRY_RUN" = 1 ]; then echo "   + /etc/thor/policy.conf: mode=learn"
+else printf '# thor (docs/18): enforce — политика действует; learn — только при установке системы\nmode=learn\n' > "$MNT/etc/thor/policy.conf"; fi
+thor_install() {
+	# libxbps с политикой программы берут из своего дерева (rpath $ORIGIN/../lib)
+	run env XBPS_ARCH=x86_64 "$THOR" install -y -r "$MNT" -R "$REPO" -R "$NONFREE" "$@"
+}
+
+say "установка пакетов ($(vh_packages | wc -l) шт. + зависимости), без ядра — thor, параллельно"
 # Ядро ставится последним, уже после настройки (ниже): тогда его хуки сразу соберут
 # UKI нужным dracut-uefi, подпишут её готовыми ключами и пропишут в Limine.
 mapfile -t PKGS < <(vh_packages | grep -vx "$VH_KERNEL")
-run env XBPS_ARCH=x86_64 xbps-install -Sy -r "$MNT" -R "$REPO" -R "$NONFREE" "${PKGS[@]}"
+thor_install "${PKGS[@]}"
 
 # ---------------------------------------------------------------- netline
 if [ "$VH_NETLINE" = yes ]; then
@@ -182,7 +197,7 @@ say "файлы конфигурации (rootfs/)"
 install_tree "$VH_ROOT/rootfs" "$MNT"
 run install -d -m 0700 "$MNT/root/vh"
 run cp -a "$VH_ROOT/install" "$VH_ROOT/tools" "$VH_ROOT/rootfs" "$VH_ROOT/optional" \
-	"$VH_ROOT/src" "$VH_ROOT/vh.conf.example" "$MNT/root/vh/"
+	"$VH_ROOT/src" "$VH_ROOT/zig" "$VH_ROOT/thor" "$VH_ROOT/vh.conf.example" "$MNT/root/vh/"
 # инструменты на C: компилятор — только в RAM live-среды, в систему — готовые программы
 run bash "$VH_ROOT/install/build-tools.sh" "$MNT"
 [ -f "$CFG" ] && run install -m 0600 "$CFG" "$MNT/root/vh/vh.conf"
@@ -211,7 +226,7 @@ run env -i PATH=/usr/bin:/usr/sbin HOME=/root TERM="${TERM:-linux}" \
 
 # ---------------------------------------------------------------- ядро и загрузчик
 say "ядро $VH_KERNEL: dracut-uefi → UKI → подпись → limine.conf → Limine"
-run env XBPS_ARCH=x86_64 xbps-install -Sy -r "$MNT" -R "$REPO" -R "$NONFREE" "$VH_KERNEL"
+thor_install "$VH_KERNEL"
 if [ "$DRY_RUN" != 1 ]; then
 	ls "$MNT"/boot/efi/EFI/void/linux-*.efi >/dev/null 2>&1 || die "UKI не создана (см. вывод dracut выше)"
 	[ -s "$MNT/boot/efi/EFI/BOOT/BOOTX64.EFI" ] && [ -s "$MNT/boot/efi/EFI/BOOT/limine.conf" ] \
@@ -229,6 +244,10 @@ run chroot "$MNT" efibootmgr -q -c -d "$VH_DISK" -p 1 -L "Void Linux (Limine)" -
 
 # Кэш пакетов (~1,5 ГБ) на целевой системе не нужен.
 run rm -rf "$MNT/var/cache/xbps"
+
+say "политика thor: enforce (базовый список — $(grep -vc '^#' "$MNT/etc/thor/baseline" 2>/dev/null || echo 0) записей)"
+if [ "$DRY_RUN" = 1 ]; then echo "   + /etc/thor/policy.conf: mode=enforce"
+else printf '# thor (docs/18): enforce — политика действует; learn — только при установке системы\nmode=enforce\n' > "$MNT/etc/thor/policy.conf"; fi
 
 # ---------------------------------------------------------------- итог
 say "готово"

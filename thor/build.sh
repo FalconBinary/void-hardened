@@ -29,7 +29,9 @@ printf '#!/bin/sh\nexec "%s" ar "$@"\n' "$ZIG" > "$work/bin/ar"
 printf '#!/bin/sh\nexec "%s" ranlib "$@"\n' "$ZIG" > "$work/bin/ranlib"
 chmod 0755 "$work/bin/ar" "$work/bin/ranlib"
 PATH=$work/bin:$PATH
-export PATH
+# кэш Zig — в каталоге сборки (RAM live-среды), а не в $HOME и не рядом с исходниками
+ZIG_GLOBAL_CACHE_DIR=$work/zig-gcache ZIG_LOCAL_CACHE_DIR=$work/zig-cache
+export PATH ZIG_GLOBAL_CACHE_DIR ZIG_LOCAL_CACHE_DIR
 
 # Защита от эксплуатации ошибок памяти — тот же набор, что у инструментов (docs/17).
 # -Wno-error: upstream собирается с -Werror, а новые glibc и clang дают предупреждения
@@ -41,14 +43,16 @@ CFLAGS="-O2 -pipe -Wno-error -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-prote
 
 echo "== политика (Zig) → thor_policy.o"
 "$ZIG" build-obj "$thor/policy/policy.zig" -OReleaseSafe -fPIC -fno-omit-frame-pointer \
-	-femit-bin="$src/lib/thor_policy.o" --cache-dir "$work/zig-cache" --global-cache-dir "$work/zig-gcache"
+	-femit-bin="$src/lib/thor_policy.o"
 
 echo "== xbps $XBPS_VERSION + патчи (zig cc)"
 (
 	cd "$src"
-	# libcrypto явно: lld, в отличие от ld.bfd, не подтягивает зависимости libssl
+	# libcrypto явно: lld, в отличие от ld.bfd, не подтягивает зависимости libssl.
+	# rpath $ORIGIN/../lib: программы берут libxbps (с политикой) из своего дерева, а не
+	# штатную /usr/lib/libxbps.so.6 live-среды; в системе это та же /usr/lib.
 	CC="$ZIG cc" CFLAGS="$CFLAGS" LDFLAGS="-lcrypto" \
-		./configure --prefix=/usr --sysconfdir=/etc > "$work/configure.log" 2>&1 \
+		./configure --prefix=/usr --sysconfdir=/etc --enable-rpath > "$work/configure.log" 2>&1 \
 		|| { tail -20 "$work/configure.log" >&2; exit 1; }
 	make -j"$(nproc)" > "$work/make.log" 2>&1 || { grep -B2 -A8 -i 'error' "$work/make.log" | head -60 >&2; exit 1; }
 	make DESTDIR="$dest" install > "$work/install.log" 2>&1
@@ -63,8 +67,7 @@ if [ -e "$thor/src/thor.zig" ]; then
 	echo "== thor (Zig)"
 	(
 		cd "$thor"
-		"$ZIG" build -Doptimize=ReleaseSafe -Dxbps-src="$src" --prefix "$dest/usr" \
-			--cache-dir "$work/zig-cache" --global-cache-dir "$work/zig-gcache"
+		"$ZIG" build -Dxbps-src="$src" --prefix "$dest/usr"
 	)
 fi
 echo "== готово: $dest"

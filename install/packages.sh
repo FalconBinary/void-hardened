@@ -2,11 +2,13 @@
 # Список пакетов целевой системы. Вместо base-system — явный минимальный набор:
 # base-system тянет sudo, dhcpcd, wpa_supplicant, openssh, btrfs/f2fs-progs и т. п.
 # Обоснование каждого пакета — docs/02-bootstrap.md.
+# thor — xbps с политикой void-hardened (docs/18); собирается install/build-thor.sh и
+# ставится из локального репозитория /var/lib/thor/repo, заменяя xbps и libxbps.
 
 vh_packages() {
 	local p=(
 		# --- основа: то, что нужно любой системе Void
-		base-files xbps runit-void removed-packages
+		base-files thor runit-void removed-packages
 		coreutils findutils diffutils dash bash grep gzip sed gawk less which tar
 		util-linux shadow procps-ng iana-etc tzdata glibc-locales ncurses kbd
 		kmod eudev iproute2 iputils libcap-progs ethtool iw pciutils usbutils
