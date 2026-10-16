@@ -14,6 +14,8 @@ const tools = [_]Tool{
     .{ .name = "vh-seccomp" },
     .{ .name = "vh-pkg" },
     .{ .name = "vh-deep-clean" },
+    .{ .name = "vh-usb-udev" },
+    .{ .name = "vh-open" },
 };
 
 pub fn build(b: *std.Build) void {

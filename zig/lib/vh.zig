@@ -373,6 +373,13 @@ pub fn listDirFd(fd: fd_t) Error![]const []const u8 {
     return names.items;
 }
 
+/// канонический путь (как realpath): все симлинки раскрыты; ошибка — путь не существует
+pub fn realpath(path: []const u8) Error![]u8 {
+    const fd = try openFd(path, .{ .ACCMODE = .RDONLY, .PATH = true }, 0);
+    defer close(fd);
+    return readlink(fmt("/proc/self/fd/{d}", .{fd}));
+}
+
 /// строка из stdin (без перевода строки); null — конец ввода
 pub fn readLine() ?[]const u8 {
     var line: std.ArrayList(u8) = .empty;
