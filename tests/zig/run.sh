@@ -33,6 +33,10 @@ docker run --rm --privileged -v "$repo:/src:ro" -v "$out:/t:ro" "$img" sh -c '
 		|| { echo "РАЗЛИЧИЕ --selftest"; exit 1; }
 	r1=0; r2=0; $Z/vh-seccomp x 2>/tmp/e1 || r1=$?; $C/vh-seccomp x 2>/tmp/e2 || r2=$?
 	[ "$r1" = "$r2" ] && cmp -s /tmp/e1 /tmp/e2 && echo "ok ошибка аргумента совпадает" || { echo "РАЗЛИЧИЕ ошибки"; exit 1; }
+	echo "== vh-wlfilter: протокол против C и фаззинг (ReleaseSafe: любая паника = различие)"
+	python3 /src/tests/c/wlfilter_diff.py $C/vh-wlfilter $Z/vh-wlfilter --fuzz ${FUZZ:-200} > /tmp/wl.log 2>&1 \
+		|| { grep -v "^ok " /tmp/wl.log | tail -30; exit 1; }
+	tail -1 /tmp/wl.log
 	echo "== vh-limine-update"
 	sh /src/tests/c/limine_diff.sh $C/vh-limine-update $Z/vh-limine-update
 	echo "== vh-uki-verify"

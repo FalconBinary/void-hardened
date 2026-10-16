@@ -20,6 +20,7 @@ const tools = [_]Tool{
     .{ .name = "vh-uki-verify" },
     .{ .name = "vh-acpid" },
     .{ .name = "vh-deadman" },
+    .{ .name = "vh-wlfilter" },
 };
 
 pub fn build(b: *std.Build) void {
