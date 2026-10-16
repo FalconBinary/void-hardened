@@ -88,7 +88,7 @@ thor search pdf                   # = xbps-query -Rs
 
 Как это устроено:
 
-1. thor спрашивает у `xbps-install -n` план транзакции: какие пакеты откуда ставить.
+1. thor синхронизирует репозитории (`xbps-install -S`) и спрашивает у `xbps-install -n` план транзакции: какие пакеты откуда ставить.
 2. Пакеты, которых нет в кэше, качают **N процессов-воркеров** (по умолчанию 4). Каждый
    использует штатный загрузчик libxbps (`xbps_fetch_file_dest`): тот же TLS, прокси,
    докачка `.part` и keep-alive внутри воркера. Новый сетевой код не писался.
@@ -222,7 +222,13 @@ doas vh-audit                     # раздел «SUID…»: thor устано�
    - установка из официального репозитория;
    - SUID у `fusermount3` снят.
 4. **vh-pkg поверх thor** (`vhpkg_test.sh`).
-5. **VM-стенд**: шаг `thor` в `tests/vm/check.py`:
+5. **Путь установщика** (`live_test.sh`, отдельно: `docker run … sh tests/thor/live_test.sh`):
+   - `build-thor.sh` в live-среде: Zig по подписи, xbps по контрольной сумме, пакет;
+   - установка в пустой корень через thor в режиме learn: базовый список, SUID только у
+     doas, `cap_syslog` у nanoklogd;
+   - `build-tools.sh`;
+   - режим enforce: модуль dracut нового пакета не распаковывается.
+6. **VM-стенд**: шаг `thor` в `tests/vm/check.py`:
    - перевод установленной системы на thor;
    - установка через thor;
    - пересборка UKI;

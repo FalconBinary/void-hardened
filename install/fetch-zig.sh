@@ -15,20 +15,22 @@ DIR=${2:?"каталог для компилятора (в RAM)"}
 # Ключ подписи релизов Zig, опубликован на https://ziglang.org/download/.
 # Сверьте его по второму независимому каналу (docs/08), прежде чем доверять.
 ZIG_PUBKEY="RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U"
-# Контрольные суммы x86_64-linux (из https://ziglang.org/download/index.json,
-# сверены с подписью minisign).
+# Контрольные суммы (из https://ziglang.org/download/index.json, сверены с подписью
+# minisign). aarch64 — только для тестов в контейнере на Apple Silicon.
 declare -A ZIG_SHA256=(
-	[0.16.0]=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
-	[0.17.0]=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+	[0.16.0-x86_64]=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+	[0.17.0-x86_64]=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+	[0.17.0-aarch64]=9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8
 )
+ARCH=$(uname -m)
 
 # в live-образе нет xz (архив Zig — .tar.xz) и minisign — ставятся в RAM live-среды
 for t in minisign xz; do
 	command -v "$t" >/dev/null || xbps-install -Sy "$t" >/dev/null || die "не удалось поставить $t в live-среду"
 done
 
-tarball=zig-x86_64-linux-$VER.tar.xz
-zig=$DIR/zig-x86_64-linux-$VER/zig
+tarball=zig-$ARCH-linux-$VER.tar.xz
+zig=$DIR/zig-$ARCH-linux-$VER/zig
 if [ -x "$zig" ]; then
 	echo "$zig"
 	exit 0
@@ -42,8 +44,8 @@ xbps-fetch -o "$tarball.minisig" "$url.minisig" >&2
 minisign -Vm "$tarball" -x "$tarball.minisig" -P "$ZIG_PUBKEY" >&2 || die "подпись Zig не сошлась"
 grep -q "^trusted comment: .*file:$tarball[[:space:]]" "$tarball.minisig" \
 	|| die "подпись Zig выдана на другой файл, не $tarball"
-if [ -n "${ZIG_SHA256[$VER]:-}" ]; then
-	echo "${ZIG_SHA256[$VER]}  $tarball" | sha256sum -c - >&2 || die "контрольная сумма Zig не сошлась"
+if [ -n "${ZIG_SHA256[$VER-$ARCH]:-}" ]; then
+	echo "${ZIG_SHA256[$VER-$ARCH]}  $tarball" | sha256sum -c - >&2 || die "контрольная сумма Zig не сошлась"
 else
 	warn "для Zig $VER нет сохранённой контрольной суммы — проверена только подпись"
 fi

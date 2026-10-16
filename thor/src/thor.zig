@@ -203,6 +203,8 @@ fn transaction(args_in: []const [:0]const u8, mode: Mode) void {
     needRoot(@tagName(mode));
     // ключи thor (-j N) отделяются, остальное — для xbps-install как есть
     var pass: std.ArrayList([]const u8) = .empty;
+    // ключи без имён пакетов — для синхронизации репозиториев (xbps-install -S)
+    var sync_args: std.ArrayList([]const u8) = .empty;
     var paths: XbpsPaths = .{};
     var jobs_opt: ?usize = null;
     var i: usize = 0;
@@ -215,6 +217,15 @@ fn transaction(args_in: []const [:0]const u8, mode: Mode) void {
             continue;
         }
         pass.append(vh.gpa, a) catch vh.oom();
+        if (vh.startsWith(a, "--repository=") or vh.startsWith(a, "--rootdir=") or vh.startsWith(a, "--config=") or
+            vh.startsWith(a, "--cachedir="))
+            sync_args.append(vh.gpa, a) catch vh.oom();
+        if ((vh.eql(a, "-R") or vh.eql(a, "--repository")) and i + 1 < args_in.len) {
+            i += 1;
+            pass.append(vh.gpa, args_in[i]) catch vh.oom();
+            sync_args.appendSlice(vh.gpa, &.{ a, args_in[i] }) catch vh.oom();
+            continue;
+        }
         // пути, которые нужны самому thor (кэш пакетов)
         const takes = [_]struct { s: []const u8, l: []const u8, f: enum { root, cache, conf } }{
             .{ .s = "-r", .l = "--rootdir", .f = .root },
@@ -225,6 +236,7 @@ fn transaction(args_in: []const [:0]const u8, mode: Mode) void {
             if ((vh.eql(a, t.s) or vh.eql(a, t.l)) and i + 1 < args_in.len) {
                 i += 1;
                 pass.append(vh.gpa, args_in[i]) catch vh.oom();
+                sync_args.appendSlice(vh.gpa, &.{ a, args_in[i] }) catch vh.oom();
                 switch (t.f) {
                     .root => paths.root = args_in[i],
                     .cache => paths.cache = args_in[i],
@@ -246,9 +258,17 @@ fn transaction(args_in: []const [:0]const u8, mode: Mode) void {
     const cf = readConf(root);
     const jobs = jobs_opt orelse cf.jobs;
 
-    // 1. план: синхронизация репозиториев и список действий (xbps-install -Sn)
+    // 1. синхронизация репозиториев — отдельно: в пробном режиме (-n) xbps-install их не
+    // синхронизирует; ключи путей и репозиториев те же, что у установки
+    var sync_argv: std.ArrayList([]const u8) = .empty;
+    sync_argv.appendSlice(vh.gpa, &.{ xbpsBin("xbps-install"), "-S" }) catch vh.oom();
+    sync_argv.appendSlice(vh.gpa, sync_args.items) catch vh.oom();
+    const src = vh.run(sync_argv.items);
+    if (src != 0) vh.exit(src);
+
+    // 2. план: список действий (xbps-install -n)
     var plan_argv: std.ArrayList([]const u8) = .empty;
-    plan_argv.appendSlice(vh.gpa, &.{ xbpsBin("xbps-install"), "-S", "-n" }) catch vh.oom();
+    plan_argv.appendSlice(vh.gpa, &.{ xbpsBin("xbps-install"), "-n" }) catch vh.oom();
     for (pass.items) |a| if (!vh.eql(a, "-y") and !vh.eql(a, "--yes")) plan_argv.append(vh.gpa, a) catch vh.oom();
     var out: std.ArrayList(u8) = .empty;
     var err: std.ArrayList(u8) = .empty;
@@ -260,7 +280,7 @@ fn transaction(args_in: []const [:0]const u8, mode: Mode) void {
         vh.exit(rc);
     }
 
-    // 2. что скачать: пакеты из удалённых репозиториев, которых ещё нет в кэше
+    // 3. что скачать: пакеты из удалённых репозиториев, которых ещё нет в кэше
     const cache = cstr(&xhp.cachedir);
     var todo: std.ArrayList(Job) = .empty;
     var lines = mem.tokenizeScalar(u8, out.items, '\n');
@@ -283,13 +303,13 @@ fn transaction(args_in: []const [:0]const u8, mode: Mode) void {
         todo.append(vh.gpa, .{ .pkgver = f[0], .repo = f[3], .file = file, .size = std.fmt.parseInt(u64, f[5], 10) catch 0 }) catch vh.oom();
     }
 
-    // 3. параллельная загрузка
+    // 4. параллельная загрузка
     if (todo.items.len > 0) {
         vh.mkdirs(cache, 0o755);
         download(todo.items, cache, @min(jobs, todo.items.len), cf);
     }
 
-    // 4. обычный xbps-install: проверка подписей из кэша, установка, политика
+    // 5. обычный xbps-install: проверка подписей из кэша, установка, политика
     c.xbps_end(&xhp);
     if (mode == .fetch) pass.append(vh.gpa, "-y") catch vh.oom();
     execWith("xbps-install", &.{}, pass.items);

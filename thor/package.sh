@@ -11,7 +11,9 @@ dest=${1:?DESTDIR}
 arch=${2:?"архитектура, например x86_64"}
 repo=${3:?"каталог репозитория"}
 pkgver=thor-$XBPS_VERSION.${THOR_REVISION}_1
-export LD_LIBRARY_PATH="$dest/usr/lib"
+# xbps-create и xbps-rindex — из DESTDIR; при кросс-сборке — программы машины сборки
+X=${XBPS_BIN:-$dest/usr/bin}
+[ -n "${XBPS_BIN:-}" ] || export LD_LIBRARY_PATH="$dest/usr/lib"
 
 # файлы, которые пакет xbps в Void добавляет к upstream
 install -d "$dest/usr/share/xbps.d"
@@ -29,7 +31,7 @@ mkdir -p "$repo"
 repo=$(cd "$repo" && pwd)
 rm -f "$repo"/thor-*.xbps "$repo"/*-repodata
 cd "$repo"
-"$dest/usr/bin/xbps-create" -q -A "$arch" -n "$pkgver" \
+"$X/xbps-create" -q -A "$arch" -n "$pkgver" \
 	-s "xbps + политика безопасности void-hardened, параллельная загрузка" \
 	-H "https://github.com/FalconBinary/void-hardened" \
 	-l "BSD-2-Clause, GPL-3.0-or-later" -m "void-hardened" \
@@ -39,5 +41,5 @@ cd "$repo"
 	--shlib-provides "libxbps.so.6" \
 	--shlib-requires "libarchive.so.13 libcrypto.so.3 libssl.so.3 libz.so.1 libc.so.6" \
 	"$dest"
-"$dest/usr/bin/xbps-rindex" -a "$repo/$pkgver.$arch.xbps" >/dev/null
+XBPS_TARGET_ARCH=$arch "$X/xbps-rindex" -a "$repo/$pkgver.$arch.xbps" >/dev/null
 echo "$repo/$pkgver.$arch.xbps"

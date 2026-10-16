@@ -36,13 +36,25 @@ export PATH ZIG_GLOBAL_CACHE_DIR ZIG_LOCAL_CACHE_DIR
 # Защита от эксплуатации ошибок памяти — тот же набор, что у инструментов (docs/17).
 # -Wno-error: upstream собирается с -Werror, а новые glibc и clang дают предупреждения
 # о const (strchr в C23) — к безопасности они не относятся.
+# Кросс-сборка (VM-стенд с Mac): TARGET=x86_64-linux-gnu SYSROOT=КАТАЛОГ — заголовки и
+# библиотеки целевой архитектуры из распакованных пакетов Void (tests/zig/build.sh).
+# Без них — сборка для своей машины (live-среда).
+TARGET=${TARGET:-}
+SYSROOT=${SYSROOT:-}
+tflag="" xcc=""
+if [ -n "$TARGET" ]; then
+	tflag="-target $TARGET"
+	xcc="-idirafter $SYSROOT/usr/include -L$SYSROOT/usr/lib"
+	export PKG_CONFIG_LIBDIR="$SYSROOT/usr/lib/pkgconfig" PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
+fi
+arch=${TARGET%%-*}
 cet=""
-case $(uname -m) in x86_64) cet="-fcf-protection=full -march=x86-64" ;; esac
+case ${arch:-$(uname -m)} in x86_64) cet="-fcf-protection=full -mcpu=baseline" ;; esac
 CFLAGS="-O2 -pipe -Wno-error -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-protector-strong \
 -fstack-clash-protection $cet -ftrivial-auto-var-init=zero"
 
 echo "== политика (Zig) → thor_policy.o"
-"$ZIG" build-obj "$thor/policy/policy.zig" -OReleaseSafe -mcpu=baseline -fPIC -fno-omit-frame-pointer \
+"$ZIG" build-obj "$thor/policy/policy.zig" $tflag -OReleaseSafe -mcpu=baseline -fPIC -fno-omit-frame-pointer \
 	-femit-bin="$src/lib/thor_policy.o"
 
 echo "== xbps $XBPS_VERSION + патчи (zig cc)"
@@ -51,7 +63,7 @@ echo "== xbps $XBPS_VERSION + патчи (zig cc)"
 	# libcrypto явно: lld, в отличие от ld.bfd, не подтягивает зависимости libssl.
 	# rpath $ORIGIN/../lib: программы берут libxbps (с политикой) из своего дерева, а не
 	# штатную /usr/lib/libxbps.so.6 live-среды; в системе это та же /usr/lib.
-	CC="$ZIG cc" CFLAGS="$CFLAGS" LDFLAGS="-lcrypto" \
+	CC="$ZIG cc $tflag $xcc" CFLAGS="$CFLAGS" LDFLAGS="-lcrypto" \
 		./configure --prefix=/usr --sysconfdir=/etc --enable-rpath > "$work/configure.log" 2>&1 \
 		|| { tail -20 "$work/configure.log" >&2; exit 1; }
 	make -j"$(nproc)" > "$work/make.log" 2>&1 || { grep -B2 -A8 -i 'error' "$work/make.log" | head -60 >&2; exit 1; }
@@ -67,7 +79,8 @@ if [ -e "$thor/src/thor.zig" ]; then
 	echo "== thor (Zig)"
 	(
 		cd "$thor"
-		"$ZIG" build -Dcpu=baseline -Dxbps-src="$src" --prefix "$dest/usr"
+		"$ZIG" build -Dcpu=baseline ${TARGET:+-Dtarget=$TARGET} ${SYSROOT:+--search-prefix $SYSROOT/usr} \
+			-Dxbps-src="$src" --prefix "$dest/usr"
 	)
 fi
 echo "== готово: $dest"

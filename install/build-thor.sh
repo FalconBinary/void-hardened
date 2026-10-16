@@ -20,7 +20,7 @@ VH_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$VH_ROOT/thor/UPSTREAM"
 need_root
 ROOT=${1:?"корень системы, например /mnt"}
-[ "$(uname -m)" = x86_64 ] || die "нужен x86_64"
+ARCH=$(xbps-uhelper arch)    # x86_64 на ноутбуке; другая — только в тестах (tests/thor/live_test.sh)
 WORK=/tmp/vh-thor            # tmpfs live-среды
 ZIG_VERSION=$(cat "$VH_ROOT/zig/ZIG_VERSION")
 PKGVER=thor-$XBPS_VERSION.${THOR_REVISION}_1
@@ -48,8 +48,8 @@ dest=$WORK/dest
 say "пакет $PKGVER"
 repo=$ROOT/var/lib/thor/repo
 install -d -m 0755 "$repo"
-sh "$VH_ROOT/thor/package.sh" "$dest" x86_64 "$repo" >/dev/null
-ok "$repo/$PKGVER.x86_64.xbps"
+sh "$VH_ROOT/thor/package.sh" "$dest" "$ARCH" "$repo" >/dev/null
+ok "$repo/$PKGVER.$ARCH.xbps"
 
 install -d -m 0755 "$ROOT/etc/xbps.d" "$ROOT/etc/thor"
 cat > "$ROOT/etc/xbps.d/01-thor.conf" <<'EOF'
