@@ -2,3 +2,7 @@ tests/vm/work/
 vh.conf
 __pycache__/
 build/
+zig/.zig-cache/
+zig/zig-out/
+thor/.zig-cache/
+thor/zig-out/

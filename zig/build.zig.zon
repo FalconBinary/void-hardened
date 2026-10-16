@@ -1,0 +1,8 @@
+.{
+    .name = .vh_tools,
+    .version = "1.0.0",
+    .fingerprint = 0x6644d6b48651fede,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{},
+    .paths = .{ "build.zig", "build.zig.zon", "lib", "tools" },
+}

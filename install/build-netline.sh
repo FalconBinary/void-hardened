@@ -4,44 +4,22 @@
 #
 # Почему так: в репозитории Void есть только zig 0.13, а netline нужен 0.16,
 # и в установленной системе компилятора быть не должно (docs/08). Компилятор
-# скачивается с ziglang.org, проверяется подписью minisign и контрольной суммой,
-# живёт в /tmp (RAM) и исчезает после перезагрузки. Сборка — то же, что
+# скачивается с ziglang.org (install/fetch-zig.sh: подпись minisign и контрольная
+# сумма), живёт в /tmp (RAM) и исчезает после перезагрузки. Сборка — то же, что
 # «параноидальный вариант» из модуля 3: из проверенной live-среды.
 
 . "$(dirname "$0")/lib.sh"
 load_config "${VH_CONFIG:-$VH_ROOT/vh.conf}"
 TARGET=${1:?укажите целевой корень, например /mnt}
 
-# Ключ подписи релизов Zig, опубликован на https://ziglang.org/download/.
-# Сверьте его по второму независимому каналу (docs/08), прежде чем доверять.
-ZIG_PUBKEY="RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U"
-# Контрольные суммы известных версий (из https://ziglang.org/download/index.json).
-declare -A ZIG_SHA256=(
-	[0.16.0]=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
-)
-
-# в live-образе нет xz (архив Zig — .tar.xz), git и minisign — ставятся в RAM live-среды
-for t in minisign git xz; do
-	command -v "$t" >/dev/null || xbps-install -Sy "$t" >/dev/null || die "не удалось поставить $t в live-среду"
-done
+# в live-образе нет git — ставится в RAM live-среды
+command -v git >/dev/null || xbps-install -Sy git >/dev/null || die "не удалось поставить git в live-среду"
 
 WORK=$(mktemp -d /tmp/vh-netline.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
+# компилятор: загрузка, подпись minisign и контрольная сумма — install/fetch-zig.sh
+ZIG=$(bash "$VH_ROOT/install/fetch-zig.sh" "$VH_ZIG_VERSION" "$WORK/zig")
 cd "$WORK"
-
-tarball=zig-x86_64-linux-$VH_ZIG_VERSION.tar.xz
-url=https://ziglang.org/download/$VH_ZIG_VERSION/$tarball
-say "Zig $VH_ZIG_VERSION: загрузка и проверка подписи"
-xbps-fetch -o "$tarball" "$url"
-xbps-fetch -o "$tarball.minisig" "$url.minisig"
-minisign -Vm "$tarball" -x "$tarball.minisig" -P "$ZIG_PUBKEY" || die "подпись Zig не сошлась"
-if [ -n "${ZIG_SHA256[$VH_ZIG_VERSION]:-}" ]; then
-	echo "${ZIG_SHA256[$VH_ZIG_VERSION]}  $tarball" | sha256sum -c - || die "контрольная сумма Zig не сошлась"
-else
-	warn "для Zig $VH_ZIG_VERSION нет сохранённой контрольной суммы — проверена только подпись"
-fi
-tar -xJf "$tarball"
-ZIG=$WORK/zig-x86_64-linux-$VH_ZIG_VERSION/zig
 "$ZIG" version
 
 say "netline: исходники $VH_NETLINE_REPO @ $VH_NETLINE_REF"
