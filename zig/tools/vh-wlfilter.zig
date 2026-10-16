@@ -77,11 +77,46 @@ const XDG_TOPLEVEL_SET_FULLSCREEN = 11;
 
 const Chunk = struct {
     next: ?*Chunk = null,
+    /// выделенная память (из пула — может быть больше data)
+    buf: []u8,
     data: []u8,
     off: usize = 0,
     fds: [MAX_FDS]i32 = undefined,
     nfds: usize = 0,
 };
+
+/// Пул блоков очереди: в обычном потоке (без обратного давления) память не выделяется и
+/// не освобождается на каждое сообщение — RSS демона остаётся около мегабайта.
+var pool: ?*Chunk = null;
+var pool_n: usize = 0;
+const POOL_MAX = 16;
+const POOL_BUF = 8192;
+
+fn chunkNew(len: usize) *Chunk {
+    if (len <= POOL_BUF) {
+        if (pool) |c| {
+            pool = c.next;
+            pool_n -= 1;
+            c.* = .{ .buf = c.buf, .data = c.buf[0..len] };
+            return c;
+        }
+    }
+    const c = A.create(Chunk) catch vh.oom();
+    const buf = A.alloc(u8, @max(len, POOL_BUF)) catch vh.oom();
+    c.* = .{ .buf = buf, .data = buf[0..len] };
+    return c;
+}
+
+fn chunkFree(c: *Chunk) void {
+    if (c.buf.len == POOL_BUF and pool_n < POOL_MAX) {
+        c.next = pool;
+        pool = c;
+        pool_n += 1;
+        return;
+    }
+    A.free(c.buf);
+    A.destroy(c);
+}
 
 /// Одно направление: сокет, входной буфер, очередь на отправку.
 const Side = struct {
@@ -368,8 +403,7 @@ fn closeConn(k: *Conn) void {
         while (c) |ch| {
             c = ch.next;
             for (ch.fds[0..ch.nfds]) |fd| vh.close(fd);
-            A.free(ch.data);
-            A.destroy(ch);
+            chunkFree(ch);
         }
         s.head = null;
         s.tail = null;
@@ -412,8 +446,9 @@ fn update(k: *Conn) void {
 }
 
 fn enqueue(dst: *Side, data: []const u8, fds: []const i32) void {
-    const c = A.create(Chunk) catch vh.oom();
-    c.* = .{ .data = A.dupe(u8, data) catch vh.oom(), .nfds = fds.len };
+    const c = chunkNew(data.len);
+    @memcpy(c.data, data);
+    c.nfds = fds.len;
     @memcpy(c.fds[0..fds.len], fds);
     if (dst.tail) |t| t.next = c else dst.head = c;
     dst.tail = c;
@@ -455,8 +490,7 @@ fn flush(dst: *Side) bool {
         if (c.off == c.data.len) {
             dst.head = c.next;
             if (dst.head == null) dst.tail = null;
-            A.free(c.data);
-            A.destroy(c);
+            chunkFree(c);
         }
     }
     update(dst.conn);
@@ -464,6 +498,7 @@ fn flush(dst: *Side) bool {
 }
 
 var recv_data: [RECV_SIZE]u8 = undefined;
+var out_buf: std.ArrayList(u8) = .empty;
 
 fn readable(src: *Side) void {
     const k = src.conn;
@@ -497,9 +532,10 @@ fn readable(src: *Side) void {
     }
     if (rc == 0) return closeConn(k);
     src.in.appendSlice(A, recv_data[0..rc]) catch vh.oom();
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(A);
-    if (filter(k, from_client, &src.in, &out)) |e| {
+    // общий буфер разбора: ёмкость остаётся между сообщениями
+    const out = &out_buf;
+    out.clearRetainingCapacity();
+    if (filter(k, from_client, &src.in, out)) |e| {
         vh.warn("клиент отключён: {s}", .{e});
         return closeConn(k);
     }

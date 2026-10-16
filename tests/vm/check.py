@@ -82,7 +82,7 @@ def boot(a, extra=None):
         # свежая копия репозитория — «сырым» tar на втором NVMe: после 30-lock.sh модуль
         # isofs не загрузить (modules_disabled), а драйвер NVMe встроен в ядро
         if not os.path.isfile(os.path.join(vhvm.REPO, "build", "vh-seccomp")):
-            sys.exit("нет build/ — соберите инструменты на C: sh tests/c/build.sh")
+            sys.exit("нет build/ — соберите инструменты и thor: sh tests/zig/build.sh")
         tar = os.path.join(vm.d, "repo.tar")
         flags = ["--no-xattrs"] + (["--no-fflags", "--no-mac-metadata"] if sys.platform == "darwin" else [])
         subprocess.run(["tar", *flags, "-cf", tar, "--exclude", ".git", "--exclude", "__pycache__",
@@ -109,7 +109,8 @@ def boot(a, extra=None):
         run(ser, "rm -rf /tmp/vhn && mkdir /tmp/vhn && "
                  "tar -xf $(readlink -f /dev/disk/by-id/nvme-*VHREPO* | head -1) -C /tmp/vhn && "
                  "cp -a /tmp/vhn/void-hardened/install /tmp/vhn/void-hardened/optional "
-                 "/tmp/vhn/void-hardened/rootfs /tmp/vhn/void-hardened/tools /tmp/vhn/void-hardened/src /root/vh/ && "
+                 "/tmp/vhn/void-hardened/rootfs /tmp/vhn/void-hardened/tools /tmp/vhn/void-hardened/zig "
+                 "/tmp/vhn/void-hardened/thor /root/vh/ && rm -rf /root/vh/src && "
                  "cd /tmp/vhn/void-hardened/rootfs/usr/local && find . -type f ! -name '*.in' | "
                  "while read f; do install -m $(stat -c %a \"$f\") \"$f\" \"/usr/local/$f\"; done; cd / && "
                  "bash /root/vh/install/build-tools.sh --prebuilt /tmp/vhn/void-hardened/build / >/dev/null && "
@@ -166,7 +167,7 @@ def step_base(a):
 
 
 def step_ctools(a):
-    """Инструменты на C в настоящей системе: ELF без python3, демоны, пересборка UKI
+    """Инструменты на Zig в настоящей системе: ELF без python3, демоны, пересборка UKI
     через vh-limine-update и загрузка с новой UKI (docs/17)."""
     vm, ser = boot(a)
     try:
@@ -177,13 +178,13 @@ def step_ctools(a):
         check("нет python3 и perl", "NO_INTERPRETERS" in out, out[-200:])
         check("инструменты — ELF", out.count("177ELF") == 6, out[-400:].replace("\n", " | "))
         rc, out = run(ser, "/usr/local/libexec/vh/vh-seccomp --selftest")
-        check("vh-seccomp --selftest (C)", rc == 0 and "selftest: OK" in out)
+        check("vh-seccomp --selftest (Zig)", rc == 0 and "selftest: OK" in out)
         rc, out = run(ser, "sv restart vh-acpid; sleep 3; sv status vh-acpid; "
                            "grep -ah vh-acpid /var/log/socklog/*/current | tail -6; grep VmRSS /proc/$(pgrep -x vh-acpid)/status")
-        check("vh-acpid (C) работает и нашёл кнопку питания", "run: vh-acpid" in out and "power:" in out,
+        check("vh-acpid (Zig) работает и нашёл кнопку питания", "run: vh-acpid" in out and "power:" in out,
               out[-300:].replace("\n", " | "))
         rc, out = run(ser, "xbps-reconfigure -f $(. /etc/vh/vh.env; echo $VH_KERNEL) 2>&1 | tail -8", timeout=1800)
-        check("xbps-reconfigure ядра → vh-limine-update (C)", "вписан в Limine" in out, out[-500:].replace("\n", " | "))
+        check("xbps-reconfigure ядра → vh-limine-update (Zig)", "вписан в Limine" in out, out[-500:].replace("\n", " | "))
         rc, out = run(ser, "mount -o ro /boot/efi && sbctl verify; r=$?; grep -c '#' /boot/efi/EFI/BOOT/limine.conf; "
                            "umount /boot/efi; test $r = 0")
         check("после пересборки всё подписано", rc == 0 and "not signed" not in out, out[-300:].replace("\n", " | "))
@@ -194,7 +195,7 @@ def step_ctools(a):
               (m.group(0) if m else "нет итога") + " | " + " | ".join(fails))
     finally:
         shutdown(vm, ser)
-    vm, ser = boot(a)                     # загрузка с UKI и Limine, записанными C-версией
+    vm, ser = boot(a)                     # загрузка с UKI и Limine, записанными Zig-версией
     try:
         rc, out = run(ser, "cat /proc/cmdline; sv status vh-acpid")
         check("загрузка после пересборки UKI", "lockdown=confidentiality" in out and "run: vh-acpid" in out)
@@ -506,23 +507,64 @@ def step_deadmandump(a):
 
 
 def step_pkg(a):
-    """vh-pkg: предупреждение о нежелательном пакете, обезвреживание SUID и udev."""
+    """vh-pkg поверх thor: запрещённый пакет не ставится, после разрешения SUID снят
+    ещё при распаковке, удаление (docs/12, docs/18)."""
     vm, ser = boot(a)
     try:
-        ser.buf = ""
-        ser.send("vh-pkg add fuse3; echo __PKG__rc=$?")
-        ser.expect(r"Ставить всё равно\? \[y/N\] ", 600)
-        check("vh-pkg: fuse3 помечен как нежелательный", "!! fuse3" in ser.alltext)
-        time.sleep(1)
-        ser.send("y")
-        m = ser.expect(r"__PKG__rc=(\d+)", 900)
-        check("vh-pkg add: установка прошла", m.group(1) == "0", ser.alltext[-600:].replace("\n", " | "))
-        rc, out = run(ser, "ls -l /usr/bin/fusermount3; ls /etc/udev/rules.d/; cat /etc/vh/suid-strip.list")
-        check("vh-pkg: SUID у fusermount3 снят", "-rwsr" not in out and "fusermount3" in out)
-        rc, out = run(ser, "chmod u+s /usr/bin/fusermount3 && vh-suid-strip --quiet; ls -l /usr/bin/fusermount3")
-        check("vh-suid-strip: снимает вернувшийся SUID по списку vh-pkg", "-rwsr" not in out)
-        rc, out = run(ser, "vh-pkg rm fuse3; xbps-query fuse3; echo q=$?")
+        rc, out = run(ser, "{ [ -e /etc/vh/optional/strict-net ] && vh-net xbps 30; true; }; vh-pkg add -y fuse3; echo rc=$?", timeout=900)
+        check("vh-pkg: fuse3 из чёрного списка не ставится", "rc=0" not in out and "fuse3" in out and "запрещён" in out,
+              out[-400:].replace("\n", " | "))
+        rc, out = run(ser, "echo y | thor allow fuse3 && vh-pkg add -y fuse3; echo rc=$?", timeout=900)
+        check("vh-pkg add после thor allow: установка прошла", "rc=0" in out, out[-600:].replace("\n", " | "))
+        rc, out = run(ser, "ls -l /usr/bin/fusermount3; grep fusermount3 /var/log/thor.log | tail -2; ls /etc/udev/rules.d/")
+        check("SUID у fusermount3 снят при распаковке (thor)", "-rwsr" not in out and "SUID/SGID снят: /usr/bin/fusermount3" in out,
+              out[-300:].replace("\n", " | "))
+        rc, out = run(ser, "vh-pkg rm fuse3; xbps-query fuse3; echo q=$?; sed -i '/^fuse3$/d' /etc/thor/allow.conf")
         check("vh-pkg rm: пакет удалён", "q=2" in out or "q=1" in out)
+    finally:
+        shutdown(vm, ser)
+
+
+def step_thor(a):
+    """Перевод установленной системы на thor (как на ноутбуке поверх старой установки):
+    пакет из локального репозитория заменяет xbps, базовый список из установленных
+    пакетов, политика enforce; затем установка через thor, vh-audit и перезагрузка."""
+    vm, ser = boot(a)
+    try:
+        rc, out = run(ser, "{ [ -e /etc/vh/optional/strict-net ] && vh-net xbps 60; true; }; "
+                           "mkdir -p /var/lib/thor/repo /etc/thor && cp /tmp/vhn/void-hardened/build/thor-repo/* /var/lib/thor/repo/ && "
+                           "printf 'repository=/var/lib/thor/repo\\n' > /etc/xbps.d/01-thor.conf && "
+                           "printf 'mode=enforce\\n' > /etc/thor/policy.conf && "
+                           "xbps-install -Sy thor 2>&1 | tail -4; echo rc=$?", timeout=1800)
+        rc, out = run(ser, "xbps-query -p pkgver thor; xbps-query -p pkgver xbps; thor --version; "
+                           "grep -c thor_unpack_entry /usr/lib/libxbps.so.6")
+        check("thor заменил xbps и libxbps", "thor-0.60.7" in out and "\nxbps-0.60.7" not in out and "thor 0.60.7" in out,
+              out[-300:].replace("\n", " | "))
+        rc, out = run(ser, "thor baseline && grep -c / /etc/thor/baseline && grep -E 'kernel.d|dracut' /etc/thor/baseline | head -5")
+        check("thor baseline: хуки ядра и модули dracut базовой системы", rc == 0 and "kernel.d" in out and "dracut" in out,
+              out[-400:].replace("\n", " | "))
+        rc, out = run(ser, "xbps-pkgdb -a; echo pkgdb=$?", timeout=900)
+        check("xbps-pkgdb -a после замены", "pkgdb=0" in out, out[-300:].replace("\n", " | "))
+        rc, out = run(ser, "{ [ -e /etc/vh/optional/strict-net ] && vh-net xbps 30; true; }; thor install -y tree htop 2>&1 | tail -12; xbps-query tree >/dev/null && echo HAS_TREE", timeout=1800)
+        check("thor install: параллельная загрузка и установка", "HAS_TREE" in out and "Загрузка" in out and "Скачано" in out,
+              out[-600:].replace("\n", " | "))
+        rc, out = run(ser, "thor install -y polkit; echo rc=$?", timeout=900)
+        check("thor: polkit запрещён", "запрещён" in out and "rc=0" not in out, out[-300:].replace("\n", " | "))
+        rc, out = run(ser, "xbps-reconfigure -f $(. /etc/vh/vh.env; echo $VH_KERNEL) 2>&1 | tail -6", timeout=1800)
+        check("xbps-reconfigure ядра с thor → UKI и Limine", "вписан в Limine" in out, out[-500:].replace("\n", " | "))
+        rc, out = run(ser, "doas vh-audit", timeout=600)
+        m = re.search(r"Итог: ok (\d+), FAIL (\d+), не проверено (\d+)", out)
+        fails = [l for l in out.splitlines() if l.startswith("[FAIL]")]
+        check("vh-audit с thor без FAIL", m is not None and m.group(2) == "0",
+              (m.group(0) if m else "нет итога") + " | " + " | ".join(fails))
+        run(ser, "thor remove -y tree htop >/dev/null 2>&1; true", timeout=600)
+    finally:
+        shutdown(vm, ser)
+    vm, ser = boot(a)
+    try:
+        rc, out = run(ser, "cat /proc/cmdline; sv status vh-acpid unbound; thor policy")
+        check("загрузка с thor", "lockdown=confidentiality" in out and "run: vh-acpid" in out and "режим: enforce" in out,
+              out[-300:].replace("\n", " | "))
     finally:
         shutdown(vm, ser)
 
@@ -584,14 +626,14 @@ def step_clean(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["base", "ctools", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "deadmandump", "totp", "modules", "pkg", "clean", "all"])
+    ap.add_argument("step", choices=["thor", "base", "ctools", "enroll", "sb", "lock", "desktop", "strictnet", "deadman", "deadmandump", "totp", "modules", "pkg", "clean", "all"])
     ap.add_argument("--dir", default=os.path.join(vhvm.REPO, "tests", "vm", "work"))
     ap.add_argument("--mem", type=int, default=3072)
     ap.add_argument("--smp", type=int, default=4)
     ap.add_argument("--user", default="admin")
     ap.add_argument("--repo", action="store_true", help="обновить /root/vh в системе из рабочей копии")
     a = ap.parse_args()
-    steps = {"base": [step_base], "ctools": [step_ctools], "enroll": [step_enroll], "sb": [step_sb], "lock": [step_lock],
+    steps = {"thor": [step_thor], "base": [step_base], "ctools": [step_ctools], "enroll": [step_enroll], "sb": [step_sb], "lock": [step_lock],
              "desktop": [step_desktop], "strictnet": [step_strictnet], "deadman": [step_deadman],
              "totp": [step_totp], "modules": [step_modules], "pkg": [step_pkg], "deadmandump": [step_deadmandump],
              "clean": [step_clean], "all": [step_base, step_enroll, step_sb, step_lock, step_desktop]}[a.step]

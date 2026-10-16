@@ -103,6 +103,14 @@ for c in gcc cc clang make tcc; do
 	command -v "$c" >/dev/null && bad "компилятор в системе: $c"
 done
 ok "компиляторов C нет (as/ld из binutils — зависимость dracut-uefi, docs/02)"
+# thor (docs/18): xbps с политикой — SUID снимается до записи на диск, хуки и правила
+# пакетов сверяются с базовым списком, чёрный список действует и при обновлениях
+if xbps-query thor >/dev/null 2>&1; then ok "пакетный менеджер: $(xbps-query -p pkgver thor)"
+else bad "thor не установлен — пакеты ставятся без политики (docs/18)"; fi
+xbps-query -p pkgver xbps 2>/dev/null | grep -q '^xbps-' && bad "установлен обычный xbps — политика thor не действует" \
+	|| ok "обычного xbps нет (его заменяет thor)"
+grep -q thor_unpack_entry /usr/lib/libxbps.so.6 2>/dev/null && ok "libxbps с политикой thor" || bad "libxbps без политики thor"
+chk "политика thor" "$(sed -n 's/^mode=//p' /etc/thor/policy.conf 2>/dev/null)" enforce
 for c in crond snooze acpid polkitd udisksd avahi-daemon cupsd NetworkManager sshd; do
 	command -v "$c" >/dev/null && bad "лишний демон: $c"
 done
