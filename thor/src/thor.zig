@@ -446,7 +446,7 @@ fn worker(todo: []const Job, cache: []const u8, jfd: vh.fd_t, rfd: vh.fd_t, rate
                 r.ok = 1;
                 break;
             }
-            why = vh.fmt("{s}: {s}", .{ mirrorOf(repo), mem.span(c.xbps_fetch_error_string()) });
+            why = vh.fmt("{s}: {s}", .{ mirrorOf(repo), fetchErr() });
         }
         if (r.ok == 0) {
             const m = why[0..@min(why.len, r.msg.len)];
@@ -456,6 +456,14 @@ fn worker(todo: []const Job, cache: []const u8, jfd: vh.fd_t, rfd: vh.fd_t, rate
         vh.writeAllFd(rfd, mem.asBytes(&r)) catch break;
     }
     linux.exit_group(0);
+}
+
+/// текст последней ошибки загрузки libxbps (NULL — ошибка не сетевая: errno)
+fn fetchErr() []const u8 {
+    const e = c.xbps_fetch_error_string();
+    if (e != null) return mem.span(e);
+    vh.errno = @enumFromInt(@as(u16, @intCast(std.c._errno().*)));
+    return vh.serr();
 }
 
 fn fetch(url: []const u8, dest: []const u8) bool {
@@ -504,6 +512,9 @@ fn mirror(args: []const [:0]const u8) void {
     if (write) needRoot("mirror");
     xbpsInit(.{});
     const arch = cstr(&xhp.native_arch);
+    // каталог репозитория для архитектуры, как в Void: x86_64 — current, musl — current/musl,
+    // остальные — current/АРХИТЕКТУРА
+    const sub = if (vh.eql(arch, "x86_64")) "" else if (vh.endsWith(arch, "-musl")) "/musl" else vh.fmt("/{s}", .{arch});
 
     vh.out("Задержка до {d} HTTPS-зеркал (TCP, порт 443)…\n", .{mirrors.len});
     vh.flush();
@@ -517,16 +528,17 @@ fn mirror(args: []const [:0]const u8) void {
         }
     }.lt);
 
-    // скорость: индекс репозитория (несколько МБ) с 5 ближайших
+    // скорость: индекс репозитория (несколько МБ) с ближайших — до 4 ответивших (10 попыток)
     const tmp = "/var/tmp/thor-mirror";
     vh.mkdirs(tmp, 0o700);
     vh.out("Скорость (индекс {s}-repodata) с ближайших:\n", .{arch});
     vh.flush();
     var tested: usize = 0;
+    var answered: usize = 0;
     for (&probes) |*p| {
-        if (p.rtt < 0 or tested == 5) continue;
+        if (p.rtt < 0 or tested == 10 or answered == 4) continue;
         tested += 1;
-        const url = vh.fmt("{s}/current/{s}-repodata", .{ p.base, arch });
+        const url = vh.fmt("{s}/current{s}/{s}-repodata", .{ p.base, sub, arch });
         const dest = vh.fmt("{s}/repodata", .{tmp});
         vh.unlink(dest) catch {};
         vh.unlink(vh.fmt("{s}.part", .{dest})) catch {};
@@ -535,7 +547,11 @@ fn mirror(args: []const [:0]const u8) void {
             const st = vh.stat(dest, false) catch continue;
             p.speed = @as(f64, @floatFromInt(st.size)) / @max(now() - t0, 0.001);
         }
-        vh.out("  {s:<48} {d:>5.0} мс  {s}/с\n", .{ p.base, p.rtt * 1000, if (p.speed > 0) human(@intFromFloat(p.speed)) else "ошибка" });
+        if (p.speed > 0) answered += 1;
+        if (p.speed > 0)
+            vh.out("  {s:<48} {d:>5.0} мс  {s}/с\n", .{ p.base, p.rtt * 1000, human(@intFromFloat(p.speed)) })
+        else
+            vh.out("  {s:<48} {d:>5.0} мс  ошибка: {s}\n", .{ p.base, p.rtt * 1000, fetchErr() });
         vh.flush();
     }
     _ = vh.run(&.{ "rm", "-rf", tmp });
@@ -555,25 +571,37 @@ fn mirror(args: []const [:0]const u8) void {
     writeMirrors(best.items);
 }
 
-/// repository= в /etc/xbps.d/00-repository-main.conf (комментарии сохраняются) и
+/// repository= во всех /etc/xbps.d/*.conf (основной, nonfree; комментарии сохраняются) и
 /// запасные зеркала в /etc/thor/thor.conf
 fn writeMirrors(best: []const Probe) void {
-    const repo_conf = "/etc/xbps.d/00-repository-main.conf";
-    const old = vh.readFile(repo_conf) catch "repository=https://repo-default.voidlinux.org/current\n";
-    var out: std.ArrayList(u8) = .empty;
-    var it = mem.splitScalar(u8, mem.trimEnd(u8, old, "\n"), '\n');
-    while (it.next()) |line| {
-        if (vh.startsWith(line, "repository=")) {
-            const url = line["repository=".len..];
-            if (swapMirror(url, best[0].base)) |u| {
-                out.print(vh.gpa, "repository={s}\n", .{u}) catch vh.oom();
-                continue;
+    const dir = "/etc/xbps.d";
+    const names = vh.listDir(dir) catch vh.die("{s}: {s}", .{ dir, vh.serr() });
+    var changed: usize = 0;
+    for (names) |name| {
+        if (!vh.endsWith(name, ".conf")) continue;
+        const path = vh.fmt("{s}/{s}", .{ dir, name });
+        if (!vh.isRegular(path)) continue;
+        const old = vh.readFile(path) catch continue;
+        var out: std.ArrayList(u8) = .empty;
+        var n: usize = 0;
+        var it = mem.splitScalar(u8, mem.trimEnd(u8, old, "\n"), '\n');
+        while (it.next()) |line| {
+            if (vh.startsWith(line, "repository=http")) {
+                // локальные репозитории (thor) и чужие пути без /current — как есть
+                if (swapMirror(line["repository=".len..], best[0].base)) |u| {
+                    out.print(vh.gpa, "repository={s}\n", .{u}) catch vh.oom();
+                    n += 1;
+                    continue;
+                }
             }
+            out.print(vh.gpa, "{s}\n", .{line}) catch vh.oom();
         }
-        out.print(vh.gpa, "{s}\n", .{line}) catch vh.oom();
+        if (n == 0) continue;
+        vh.writeAtomic(path, out.items, 0o644);
+        vh.out("  {s}: {s}\n", .{ path, best[0].base });
+        changed += 1;
     }
-    vh.writeAtomic(repo_conf, out.items, 0o644);
-    vh.out("  {s}: {s}\n", .{ repo_conf, best[0].base });
+    if (changed == 0) vh.outs("  в /etc/xbps.d нет строк repository= с зеркалом Void — не изменено\n");
 
     var tc: std.ArrayList(u8) = .empty;
     const prev = vh.readFile(conf_path) catch "";
