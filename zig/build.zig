@@ -17,6 +17,7 @@ const tools = [_]Tool{
     .{ .name = "vh-usb-udev" },
     .{ .name = "vh-open" },
     .{ .name = "vh-limine-update" },
+    .{ .name = "vh-uki-verify" },
 };
 
 pub fn build(b: *std.Build) void {

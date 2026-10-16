@@ -35,6 +35,8 @@ docker run --rm --privileged -v "$repo:/src:ro" -v "$out:/t:ro" "$img" sh -c '
 	[ "$r1" = "$r2" ] && cmp -s /tmp/e1 /tmp/e2 && echo "ok ошибка аргумента совпадает" || { echo "РАЗЛИЧИЕ ошибки"; exit 1; }
 	echo "== vh-limine-update"
 	sh /src/tests/c/limine_diff.sh $C/vh-limine-update $Z/vh-limine-update
+	echo "== vh-uki-verify"
+	python3 /src/tests/c/uki_diff.py $C/vh-uki-verify $Z/vh-uki-verify
 	echo "== vh-usb-udev"
 	sh /src/tests/c/usb_diff.sh $C/vh-usb-udev $Z/vh-usb-udev
 	echo "== vh-open"
