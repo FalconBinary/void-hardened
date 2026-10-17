@@ -99,6 +99,9 @@ pub fn main(init: std.process.Init.Minimal) void {
     const args = vh.init(init, "vh-pkg");
     // программы — только из /usr/bin (vh.run ищет по PATH процесса)
     vh.setenv("PATH", "/usr/bin");
+    // umask админа — 077 (doas его не меняет): триггеры пакетов создали бы общие кэши
+    // (база MIME, иконки, загрузчики gdk-pixbuf), которые читает только root (docs/08)
+    _ = std.os.linux.syscall1(.umask, 0o022);
     if (std.os.linux.geteuid() != 0) vh.die("запустите: doas vh-pkg …", .{});
     if (args.len < 1) usage();
     const cmd = args[0];

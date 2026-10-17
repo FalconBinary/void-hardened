@@ -159,6 +159,17 @@ chmod -R go-rwx /var/lib/sbctl
 say "SUID и capabilities"
 /usr/local/sbin/vh-suid-strip
 
+# ---------------------------------------------------------------- общие кэши (docs/08)
+# База MIME строится триггером mimedb пакета shared-mime-info. При установке через
+# thor -r /mnt он падает («Failed to write XML file»), а с флагом -n потом не
+# пересобирает базу. Без неё gdk-pixbuf не узнаёт SVG, и GTK (Firefox) падает на первой
+# же иконке. Здесь — полный chroot и umask 022 из lib.sh: база читается всеми.
+say "база MIME (shared-mime-info)"
+update-mime-database /usr/share/mime
+for f in /usr/share/mime/mime.cache /usr/share/mime/globs2; do
+	[ -s "$f" ] && [ "$(stat -c %a "$f")" = 644 ] || die "$f: нет или не 0644 — GTK не загрузит SVG-иконки"
+done
+
 # ---------------------------------------------------------------- пароли (docs/01, docs/05)
 say "пароли"
 if [ -n "${VH_TEST_PASSWORD:-}" ]; then

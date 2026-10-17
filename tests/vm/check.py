@@ -166,7 +166,9 @@ def step_base(a):
         rc, out = run(ser, "install -m 0755 /root/vh/tools/vh-bench /tmp/vh-bench && "
                            + as_user("admin", "cd /tmp && sh /tmp/vh-bench"), timeout=900)
         check("tools/vh-bench работает (dash)", "Отчёт:" in out and "zstd" in out, out[-500:].replace("\n", " | "))
-        rc, out = run(ser, "doas sh -c 'grep -ah vh-acpid /var/log/socklog/*/current | tail -3'")
+        # при загрузке vh-acpid может стартовать раньше socklog-unix, и его первые строки
+        # теряются (vlogger без /dev/log) — перезапуск, как в шаге ctools
+        rc, out = run(ser, "doas sh -c 'sv restart vh-acpid; sleep 3; grep -ah vh-acpid /var/log/socklog/*/current | tail -3'")
         check("vh-acpid нашёл кнопку питания", "power:" in out)
     finally:
         shutdown(vm, ser)

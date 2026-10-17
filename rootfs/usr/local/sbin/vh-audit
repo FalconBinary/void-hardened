@@ -165,6 +165,16 @@ getent hosts voidlinux.org >/dev/null && ok "DNS (unbound, DoT) отвечает
 chronyc -n authdata 2>/dev/null | awk 'NR>2 && $2=="NTS" {n++} END {exit !(n>0)}' \
 	&& ok "chrony: источники с NTS" || unk "chrony: нет NTS-источников (нет сети?)"
 
+sec "Рабочий стол (общие кэши)"
+# общие кэши, которые собирают триггеры пакетов: без базы MIME GTK не грузит SVG и
+# Firefox падает; с umask 077 (doas xbps-install мимо vh-update) их читает только root
+for f in /usr/share/mime/mime.cache /usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache \
+	/usr/share/glib-2.0/schemas/gschemas.compiled /usr/share/icons/hicolor/icon-theme.cache; do
+	if [ ! -s "$f" ]; then bad "нет $f (doas xbps-reconfigure -f пакета-владельца)"
+	elif [ "$(( 0$(stat -c %a "$f") & 4 ))" = 4 ]; then ok "$f читается всеми"
+	else bad "$f: $(stat -c %a "$f") — пользователь не прочитает (umask 022; xbps-reconfigure -f)"; fi
+done
+
 sec "Производительность"
 [ -e /etc/xbps.d/40-vh-firmware.conf ] && ok "прошивки: только нужные ($(du -sm /usr/lib/firmware 2>/dev/null | cut -f1) МБ)" \
 	|| unk "прошивки: распакованы все ($(du -sm /usr/lib/firmware 2>/dev/null | cut -f1) МБ)"
