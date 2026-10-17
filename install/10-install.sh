@@ -197,8 +197,8 @@ say "файлы конфигурации (rootfs/)"
 install_tree "$VH_ROOT/rootfs" "$MNT"
 run install -d -m 0700 "$MNT/root/vh"
 run cp -a "$VH_ROOT/install" "$VH_ROOT/tools" "$VH_ROOT/rootfs" "$VH_ROOT/optional" \
-	"$VH_ROOT/src" "$VH_ROOT/zig" "$VH_ROOT/thor" "$VH_ROOT/vh.conf.example" "$MNT/root/vh/"
-# инструменты на C: компилятор — только в RAM live-среды, в систему — готовые программы
+	"$VH_ROOT/zig" "$VH_ROOT/thor" "$VH_ROOT/vh.conf.example" "$MNT/root/vh/"
+# инструменты на Zig: компилятор — только в RAM live-среды, в систему — готовые программы
 run bash "$VH_ROOT/install/build-tools.sh" "$MNT"
 [ -f "$CFG" ] && run install -m 0600 "$CFG" "$MNT/root/vh/vh.conf"
 if [ "$DRY_RUN" != 1 ]; then
